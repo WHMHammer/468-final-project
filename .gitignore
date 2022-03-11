@@ -1,0 +1,7 @@
+venv
+regress
+in.txt
+out.txt
+training.png
+testing.png
+.vscode
