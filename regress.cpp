@@ -191,7 +191,7 @@ int main(void) {
         }
 
         // Check convergence
-        if (std::abs((loss - prev_loss) / prev_loss) < 1e-5) {
+        if (std::abs((loss - prev_loss) / prev_loss) < 1e-4) {
             break;
         }
         prev_loss = loss;

@@ -24,7 +24,7 @@ template<int block_size> __global__ void kernel(float* const X, float* const y, 
     __shared__ float loss;
     __shared__ int index_low;
     __shared__ int index_high;
-    //__shared__ bool z_score_trimming_flag_converged;
+    __shared__ bool z_score_trimming_flag_converged;
     curandState_t state;
     curand_init(seed, 0, 0, &state);
 
@@ -119,44 +119,127 @@ template<int block_size> __global__ void kernel(float* const X, float* const y, 
                     abs_residual_low = std::abs(residuals[index_low]);
                 }
             }
+        }
 
-            // Z-score-trimming
-            while (true) {
-                float mean = 0;
-                for (int i = index_low; i <= index_high; i++) {
-                    mean += residuals[i];
-                }
-                mean /= (index_high - index_low);
-                float stdev = 0;
-                for (int i = index_low; i <= index_high; i++) {
-                    const float diff = residuals[i] - mean;
-                    stdev += diff * diff;
-                }
-                stdev = sqrt(stdev / (index_high - index_low));
-                bool flag_converged = true;
+        // Z-score-trimming
+        __syncthreads();
+        while (true) {
+            residuals_copy[threadIdx.x] = residuals[threadIdx.x];
+            __syncthreads();
+            if (block_size > 512 && threadIdx.x < 512) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 512];
+            }
+            __syncthreads();
+            if (block_size > 256 && threadIdx.x < 256) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 256];
+            }
+            __syncthreads();
+            if (block_size > 128 && threadIdx.x < 128) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 128];
+            }
+            __syncthreads();
+            if (block_size > 64 && threadIdx.x < 64) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 64];
+            }
+            __syncthreads();
+            if (block_size > 32 && threadIdx.x < 32) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 32];
+            }
+            __syncthreads();
+            if (block_size > 16 && threadIdx.x < 16) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 16];
+            }
+            __syncthreads();
+            if (block_size > 8 && threadIdx.x < 8) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 8];
+            }
+            __syncthreads();
+            if (block_size > 4 && threadIdx.x < 4) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 4];
+            }
+            __syncthreads();
+            if (block_size > 2 && threadIdx.x < 2) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 2];
+            }
+            __syncthreads();
+            if (block_size > 1 && threadIdx.x < 1) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 1];
+            }
+            __syncthreads();
+            const float mean = residuals_copy[0] / (index_high - index_low);
+            const float diff = residuals[threadIdx.x] - mean;
+            __syncthreads();
+            residuals_copy[threadIdx.x] = (threadIdx.x >= index_low && threadIdx.x <= index_high) ? diff * diff : 0;
+            __syncthreads();
+            if (block_size > 512 && threadIdx.x < 512) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 512];
+            }
+            __syncthreads();
+            if (block_size > 256 && threadIdx.x < 256) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 256];
+            }
+            __syncthreads();
+            if (block_size > 128 && threadIdx.x < 128) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 128];
+            }
+            __syncthreads();
+            if (block_size > 64 && threadIdx.x < 64) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 64];
+            }
+            __syncthreads();
+            if (block_size > 32 && threadIdx.x < 32) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 32];
+            }
+            __syncthreads();
+            if (block_size > 16 && threadIdx.x < 16) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 16];
+            }
+            __syncthreads();
+            if (block_size > 8 && threadIdx.x < 8) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 8];
+            }
+            __syncthreads();
+            if (block_size > 4 && threadIdx.x < 4) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 4];
+            }
+            __syncthreads();
+            if (block_size > 2 && threadIdx.x < 2) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 2];
+            }
+            __syncthreads();
+            if (block_size > 1 && threadIdx.x < 1) {
+                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 1];
+            }
+            __syncthreads();
+            if (threadIdx.x == 0) {
+                float stdev = sqrt(residuals_copy[0] / (index_high - index_low));
+                z_score_trimming_flag_converged = true;
                 const float threashold_low = mean - stdev * z_score_trimming_threashold;
                 while (residuals[index_low] < threashold_low) {
                     residuals[index_low] = 0;
                     index_low++;
-                    flag_converged = false;
+                    z_score_trimming_flag_converged = false;
                 }
                 const float threashold_high = mean + stdev * z_score_trimming_threashold;
                 while (residuals[index_high] > threashold_high) {
                     residuals[index_high] = 0;
                     index_high--;
-                    flag_converged = false;
-                }
-                if (flag_converged) {
-                    break;
+                    z_score_trimming_flag_converged = false;
                 }
             }
+            __syncthreads();
+            if (z_score_trimming_flag_converged) {
+                break;
+            }
+        }
+
+        // Calculate Huber Loss and gradient
+        if (threadIdx.x == 0) {
             loss = 0;
             for (int i = 0; i < dimension; i++) {
                 gradient[i] = 0;
             }
         }
-
-        // Calculate Huber Loss and gradient
         __syncthreads();
         const float residual = residuals[threadIdx.x];
         const float abs_residual = std::abs(residual);
@@ -183,7 +266,7 @@ template<int block_size> __global__ void kernel(float* const X, float* const y, 
 
         // Check convergence
         __syncthreads();
-        if (std::abs((loss - prev_loss) / prev_loss) < 1e-5) {
+        if (std::abs((loss - prev_loss) / prev_loss) < 1e-4) {
             break;
         }
         prev_loss = loss;
@@ -236,6 +319,11 @@ int main(void) {
 
     // Copy output to host memory
     cudaMemcpy(w, device_w, dimension * sizeof(float), cudaMemcpyDeviceToHost);
+
+    // Free device memory
+    cudaFree(device_X);
+    cudaFree(device_y);
+    cudaFree(device_w);
 
     // Write the trained weights
     f = fopen("out.txt", "w");
