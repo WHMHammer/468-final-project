@@ -20,11 +20,56 @@ make run             # run the same test on both implementations
 
 Two graphs, `testing.png` and `training.png` will be generated, showing the regression lines under the training set and the testing set. These graphs are generated to check the correctness of the implementation. For more test cases, please visit the [Robust Mini-Batch Gradient Descent](https://github.com/WHMHammer/robust-mini-batch-gradient-descent) repo.
 
+## Results
+
+The following results are from training 100 models, each with 1000 samples and a batch size of 128.
+
+```
+C++ running time:       5141.130ms
+CUDA running time:      639.351ms
+```
+
+## TODO
+
+- Add padding to adapt to non-power-of-2 batch sizes
+
+- Use local/shared memory to cache the batches
+
+- Parallelize epsilon-trimming
+
+- Fully parallelize z-score-trimming
+
+- Replace atomic additions in loss and gradient with reduction
+
+- Let the threads in the same warp use the same loss function (either squared or absolute) to prevent thread divergence
+
+- Investigate in other points of thread divergence
+
 ## Contribution
 
 [Hanming Wang](https://github.com/WHMHammer)
 
 - Implemented the baseline implementation in C++
+
+- Implemented a naive implementation in CUDA
+
+- Implemented the python test script
+
+- Parallelized residual calculation
+
+- Parallelized merge sort
+
+- (Partially) parallelized z-score-trimming
+
+- Parallelized loss and gradient calculation
+
+- Implemented a local copy of the weight vector in shared memory and only write to global memory when the model is fully trained
+
+- Changed `X` from row-major to column-major for coalesced global memory access
+
+[Jiren Li](https://github.com/Li-Jiren)
+
+- Unrolled the loops for the parallel merge sort
 
 ## Acknowledgement
 

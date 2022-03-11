@@ -51,26 +51,22 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
         }
 
         // Merge sort residuals and permute the indices accordingly
-        for (int i = 1; i < batch_size; i += 2) {
-            if (residuals[i] < residuals[i - 1]) {
-                const float tmp_float = residuals[i];
-                residuals[i] = residuals[i - 1];
-                residuals[i - 1] = tmp_float;
-                const int tmp_int = indices[i];
-                indices[i] = indices[i - 1];
-                indices[i - 1] = tmp_int;
+        if (block_size > 1 && threadIdx.x % 2 == 1) {
+            if (residuals[threadIdx.x] < residuals[threadIdx.x - 1]) {
+                const float tmp_float = residuals[threadIdx.x];
+                residuals[threadIdx.x] = residuals[threadIdx.x - 1];
+                residuals[threadIdx.x - 1] = tmp_float;
+                const int tmp_int = indices[threadIdx.x];
+                indices[threadIdx.x] = indices[threadIdx.x - 1];
+                indices[threadIdx.x - 1] = tmp_int;
             }
         }
         __syncthreads();
-        
-        if(block_size>2 && threadIdx.x % 4 == 0){
+        if (block_size > 2 && threadIdx.x % 4 == 0) {
             int j = threadIdx.x;
             const int j_end = threadIdx.x + 2;
-            if (j_end >= batch_size) {
-                break;
-            }
             int k = j_end;
-            const int k_end = ((threadIdx.x + 4) > batch_size) ? batch_size : (threadIdx.x + 4);
+            const int k_end = threadIdx.x + 4;
             int l = threadIdx.x;
             while (j != j_end && k != k_end) {
                 if (residuals[j] < residuals[k]) {
@@ -92,7 +88,7 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
                 }
             }
             else {
-                for (k = j_end - 1;k >= j; k--) {
+                for (k = j_end - 1; k >= j; k--) {
                     residuals[k + k_end - j_end] = residuals[k];
                     indices[k + k_end - j_end] = indices[k];
                 }
@@ -103,15 +99,11 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
             }
         }
         __syncthreads();
-
-        if(block_size>4 && threadIdx.x % 8 == 0){
+        if (block_size > 4 && threadIdx.x % 8 == 0) {
             int j = threadIdx.x;
             const int j_end = threadIdx.x + 4;
-            if (j_end >= batch_size) {
-                break;
-            }
             int k = j_end;
-            const int k_end = ((threadIdx.x + 8) > batch_size) ? batch_size : (threadIdx.x + 8);
+            const int k_end = threadIdx.x + 8;
             int l = threadIdx.x;
             while (j != j_end && k != k_end) {
                 if (residuals[j] < residuals[k]) {
@@ -133,7 +125,7 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
                 }
             }
             else {
-                for (k = j_end - 1;k >= j; k--) {
+                for (k = j_end - 1; k >= j; k--) {
                     residuals[k + k_end - j_end] = residuals[k];
                     indices[k + k_end - j_end] = indices[k];
                 }
@@ -144,15 +136,11 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
             }
         }
         __syncthreads();
-
-        if(block_size>8 && threadIdx.x % 16 == 0){
+        if (block_size > 8 && threadIdx.x % 16 == 0) {
             int j = threadIdx.x;
             const int j_end = threadIdx.x + 8;
-            if (j_end >= batch_size) {
-                break;
-            }
             int k = j_end;
-            const int k_end = ((threadIdx.x + 16) > batch_size) ? batch_size : (threadIdx.x + 16);
+            const int k_end = threadIdx.x + 16;
             int l = threadIdx.x;
             while (j != j_end && k != k_end) {
                 if (residuals[j] < residuals[k]) {
@@ -174,7 +162,7 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
                 }
             }
             else {
-                for (k = j_end - 1;k >= j; k--) {
+                for (k = j_end - 1; k >= j; k--) {
                     residuals[k + k_end - j_end] = residuals[k];
                     indices[k + k_end - j_end] = indices[k];
                 }
@@ -185,15 +173,11 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
             }
         }
         __syncthreads();
-
-        if(block_size>16 && threadIdx.x % 32 == 0){
+        if (block_size > 16 && threadIdx.x % 32 == 0) {
             int j = threadIdx.x;
             const int j_end = threadIdx.x + 16;
-            if (j_end >= batch_size) {
-                break;
-            }
             int k = j_end;
-            const int k_end = ((threadIdx.x + 32) > batch_size) ? batch_size : (threadIdx.x + 32);
+            const int k_end = threadIdx.x + 32;
             int l = threadIdx.x;
             while (j != j_end && k != k_end) {
                 if (residuals[j] < residuals[k]) {
@@ -215,7 +199,7 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
                 }
             }
             else {
-                for (k = j_end - 1;k >= j; k--) {
+                for (k = j_end - 1; k >= j; k--) {
                     residuals[k + k_end - j_end] = residuals[k];
                     indices[k + k_end - j_end] = indices[k];
                 }
@@ -226,15 +210,11 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
             }
         }
         __syncthreads();
-
-        if(block_size>32 && threadIdx.x % 64 == 0){
+        if (block_size > 32 && threadIdx.x % 64 == 0) {
             int j = threadIdx.x;
             const int j_end = threadIdx.x + 32;
-            if (j_end >= batch_size) {
-                break;
-            }
             int k = j_end;
-            const int k_end = ((threadIdx.x + 64) > batch_size) ? batch_size : (threadIdx.x + 64);
+            const int k_end = threadIdx.x + 64;
             int l = threadIdx.x;
             while (j != j_end && k != k_end) {
                 if (residuals[j] < residuals[k]) {
@@ -256,7 +236,7 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
                 }
             }
             else {
-                for (k = j_end - 1;k >= j; k--) {
+                for (k = j_end - 1; k >= j; k--) {
                     residuals[k + k_end - j_end] = residuals[k];
                     indices[k + k_end - j_end] = indices[k];
                 }
@@ -267,15 +247,11 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
             }
         }
         __syncthreads();
-
-        if(block_size>64 && threadIdx.x % 128 == 0){
+        if (block_size > 64 && threadIdx.x % 128 == 0) {
             int j = threadIdx.x;
             const int j_end = threadIdx.x + 64;
-            if (j_end >= batch_size) {
-                break;
-            }
             int k = j_end;
-            const int k_end = ((threadIdx.x + 128) > batch_size) ? batch_size : (threadIdx.x + 128);
+            const int k_end = threadIdx.x + 128;
             int l = threadIdx.x;
             while (j != j_end && k != k_end) {
                 if (residuals[j] < residuals[k]) {
@@ -297,7 +273,7 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
                 }
             }
             else {
-                for (k = j_end - 1;k >= j; k--) {
+                for (k = j_end - 1; k >= j; k--) {
                     residuals[k + k_end - j_end] = residuals[k];
                     indices[k + k_end - j_end] = indices[k];
                 }
@@ -308,15 +284,11 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
             }
         }
         __syncthreads();
-
-        if(block_size>128 && threadIdx.x % 256 == 0){
+        if (block_size > 128 && threadIdx.x % 256 == 0) {
             int j = threadIdx.x;
             const int j_end = threadIdx.x + 128;
-            if (j_end >= batch_size) {
-                break;
-            }
             int k = j_end;
-            const int k_end = ((threadIdx.x + 256) > batch_size) ? batch_size : (threadIdx.x + 256);
+            const int k_end = threadIdx.x + 256;
             int l = threadIdx.x;
             while (j != j_end && k != k_end) {
                 if (residuals[j] < residuals[k]) {
@@ -338,7 +310,7 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
                 }
             }
             else {
-                for (k = j_end - 1;k >= j; k--) {
+                for (k = j_end - 1; k >= j; k--) {
                     residuals[k + k_end - j_end] = residuals[k];
                     indices[k + k_end - j_end] = indices[k];
                 }
@@ -349,15 +321,11 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
             }
         }
         __syncthreads();
-
-        if(block_size>256 && threadIdx.x % 512 == 0){
+        if (block_size > 256 && threadIdx.x % 512 == 0) {
             int j = threadIdx.x;
             const int j_end = threadIdx.x + 256;
-            if (j_end >= batch_size) {
-                break;
-            }
             int k = j_end;
-            const int k_end = ((threadIdx.x + 512) > batch_size) ? batch_size : (threadIdx.x + 512);
+            const int k_end = threadIdx.x + 512;
             int l = threadIdx.x;
             while (j != j_end && k != k_end) {
                 if (residuals[j] < residuals[k]) {
@@ -379,7 +347,44 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
                 }
             }
             else {
-                for (k = j_end - 1;k >= j; k--) {
+                for (k = j_end - 1; k >= j; k--) {
+                    residuals[k + k_end - j_end] = residuals[k];
+                    indices[k + k_end - j_end] = indices[k];
+                }
+                for (k = threadIdx.x; k < l; k++) {
+                    residuals[k] = residuals_copy[k];
+                    indices[k] = indices_copy[k];
+                }
+            }
+        }
+        __syncthreads();
+        if (block_size > 512 && threadIdx.x % 1024 == 0) {
+            int j = threadIdx.x;
+            const int j_end = threadIdx.x + 512;
+            int k = j_end;
+            const int k_end = threadIdx.x + 1024;
+            int l = threadIdx.x;
+            while (j != j_end && k != k_end) {
+                if (residuals[j] < residuals[k]) {
+                    residuals_copy[l] = residuals[j];
+                    indices_copy[l] = indices[j];
+                    j++;
+                }
+                else {
+                    residuals_copy[l] = residuals[k];
+                    indices_copy[l] = indices[k];
+                    k++;
+                }
+                l++;
+            }
+            if (j == j_end) {
+                for (j = threadIdx.x; j < l; j++) {
+                    residuals[j] = residuals_copy[j];
+                    indices[j] = indices_copy[j];
+                }
+            }
+            else {
+                for (k = j_end - 1; k >= j; k--) {
                     residuals[k + k_end - j_end] = residuals[k];
                     indices[k + k_end - j_end] = indices[k];
                 }
@@ -391,49 +396,8 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
         }
         __syncthreads();
 
-        if(block_size>512 && threadIdx.x % 1024 == 0){
-            int j = threadIdx.x;
-            const int j_end = threadIdx.x + 512;
-            if (j_end >= batch_size) {
-                break;
-            }
-            int k = j_end;
-            const int k_end = ((threadIdx.x + 1024) > batch_size) ? batch_size : (threadIdx.x + 1024);
-            int l = threadIdx.x;
-            while (j != j_end && k != k_end) {
-                if (residuals[j] < residuals[k]) {
-                    residuals_copy[l] = residuals[j];
-                    indices_copy[l] = indices[j];
-                    j++;
-                }
-                else {
-                    residuals_copy[l] = residuals[k];
-                    indices_copy[l] = indices[k];
-                    k++;
-                }
-                l++;
-            }
-            if (j == j_end) {
-                for (j = threadIdx.x; j < l; j++) {
-                    residuals[j] = residuals_copy[j];
-                    indices[j] = indices_copy[j];
-                }
-            }
-            else {
-                for (k = j_end - 1;k >= j; k--) {
-                    residuals[k + k_end - j_end] = residuals[k];
-                    indices[k + k_end - j_end] = indices[k];
-                }
-                for (k = threadIdx.x; k < l; k++) {
-                    residuals[k] = residuals_copy[k];
-                    indices[k] = indices_copy[k];
-                }
-            }
-        }
-        __syncthreads();
-        
+        // Epsilon-trimming
         if (threadIdx.x == 0) {
-            // Epsilon-trimming
             index_low = 0;
             float abs_residual_low = std::abs(residuals[0]);
             index_high = batch_size - 1;
