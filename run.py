@@ -8,7 +8,6 @@ from time import time
 from typing import Union
 
 seed = int(time() * 1e6)
-seed = 1646982121297114
 print(f"Samples seed: {seed}")
 
 

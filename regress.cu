@@ -13,7 +13,8 @@ constexpr int max_iter = 100000;
 constexpr int sample_size = 1000;
 constexpr int dimension = 6;
 
-template<int block_size> __global__ void kernel(float* const X, float* const y, float* const w, const clock_t seed) {
+template<int block_size> __global__ void kernel(float* const X, float* const y, float* const _w, const clock_t seed) {
+    __shared__ float w[dimension];
     __shared__ int indices[batch_size];
     int indices_copy[batch_size];
     __shared__ float residuals[batch_size];
@@ -23,12 +24,12 @@ template<int block_size> __global__ void kernel(float* const X, float* const y, 
     __shared__ float loss;
     __shared__ int index_low;
     __shared__ int index_high;
-    __shared__ bool z_score_trimming_flag_converged;
+    //__shared__ bool z_score_trimming_flag_converged;
     curandState_t state;
-    curand_init(seed, threadIdx.x, 0, &state);
+    curand_init(seed, 0, 0, &state);
 
+    // Initialization
     if (threadIdx.x == 0) {
-        // Initialize weights
         for (int i = 0; i < dimension; i++) {
             w[i] = 1;
         }
@@ -36,18 +37,15 @@ template<int block_size> __global__ void kernel(float* const X, float* const y, 
     }
 
     for (int _ = -1; _ < max_iter; _++) {
-        __syncthreads();
-        // Sample with replacement
-        indices[threadIdx.x] = curand_uniform(&state) * sample_size;
+        // Sample a consecutive batch with random starting index
+        indices[threadIdx.x] = ((int)(curand_uniform(&state) * sample_size) + threadIdx.x) % sample_size;
 
         // Calculate residuals
-        float residual = -y[indices[threadIdx.x]];
+        residuals[threadIdx.x] = -y[indices[threadIdx.x]];
         for (int j = 0; j < dimension; j++) {
-            residual += X[indices[threadIdx.x] * dimension + j] * w[j];
+            residuals[threadIdx.x] += X[j * sample_size + indices[threadIdx.x]] * w[j];
         }
-        residuals[threadIdx.x] = residual;
 
-        __syncthreads();
         // Merge sort residuals and permute the indices accordingly
         for (int i = 1; i < batch_size; i += 2) {
             if (residuals[i] < residuals[i - 1]) {
@@ -121,166 +119,80 @@ template<int block_size> __global__ void kernel(float* const X, float* const y, 
                     abs_residual_low = std::abs(residuals[index_low]);
                 }
             }
-        }
 
-        // Z-score trimming
-        __syncthreads();
-        while (true) {
-            residuals_copy[threadIdx.x] = residuals[threadIdx.x];
-            __syncthreads();
-            if (block_size > 512 && threadIdx.x < 512) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 512];
-            }
-            __syncthreads();
-            if (block_size > 256 && threadIdx.x < 256) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 256];
-            }
-            __syncthreads();
-            if (block_size > 128 && threadIdx.x < 128) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 128];
-            }
-            __syncthreads();
-            if (block_size > 64 && threadIdx.x < 64) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 64];
-            }
-            __syncthreads();
-            if (block_size > 32 && threadIdx.x < 32) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 32];
-            }
-            __syncthreads();
-            if (block_size > 16 && threadIdx.x < 16) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 16];
-            }
-            __syncthreads();
-            if (block_size > 8 && threadIdx.x < 8) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 8];
-            }
-            __syncthreads();
-            if (block_size > 4 && threadIdx.x < 4) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 4];
-            }
-            __syncthreads();
-            if (block_size > 2 && threadIdx.x < 2) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 2];
-            }
-            __syncthreads();
-            if (block_size > 1 && threadIdx.x < 1) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 1];
-            }
-            __syncthreads();
-            const float mean = residuals[0];
-            const float diff = residuals[threadIdx.x] - mean;
-            residuals_copy[threadIdx.x] = diff * diff;
-            __syncthreads();
-            if (block_size > 512 && threadIdx.x < 512) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 512];
-            }
-            __syncthreads();
-            if (block_size > 256 && threadIdx.x < 256) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 256];
-            }
-            __syncthreads();
-            if (block_size > 128 && threadIdx.x < 128) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 128];
-            }
-            __syncthreads();
-            if (block_size > 64 && threadIdx.x < 64) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 64];
-            }
-            __syncthreads();
-            if (block_size > 32 && threadIdx.x < 32) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 32];
-            }
-            __syncthreads();
-            if (block_size > 16 && threadIdx.x < 16) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 16];
-            }
-            __syncthreads();
-            if (block_size > 8 && threadIdx.x < 8) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 8];
-            }
-            __syncthreads();
-            if (block_size > 4 && threadIdx.x < 4) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 4];
-            }
-            __syncthreads();
-            if (block_size > 2 && threadIdx.x < 2) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 2];
-            }
-            __syncthreads();
-            if (block_size > 1 && threadIdx.x < 1) {
-                residuals_copy[threadIdx.x] += residuals[threadIdx.x + 1];
-            }
-            __syncthreads();
-            if (threadIdx.x == 0) {
-                const float stdev = sqrt(residuals_copy[0] / (index_high - index_low));
-                z_score_trimming_flag_converged = true;
+            // Z-score-trimming
+            while (true) {
+                float mean = 0;
+                for (int i = index_low; i <= index_high; i++) {
+                    mean += residuals[i];
+                }
+                mean /= (index_high - index_low);
+                float stdev = 0;
+                for (int i = index_low; i <= index_high; i++) {
+                    const float diff = residuals[i] - mean;
+                    stdev += diff * diff;
+                }
+                stdev = sqrt(stdev / (index_high - index_low));
+                bool flag_converged = true;
                 const float threashold_low = mean - stdev * z_score_trimming_threashold;
                 while (residuals[index_low] < threashold_low) {
                     residuals[index_low] = 0;
                     index_low++;
-                    z_score_trimming_flag_converged = false;
+                    flag_converged = false;
                 }
                 const float threashold_high = mean + stdev * z_score_trimming_threashold;
                 while (residuals[index_high] > threashold_high) {
                     residuals[index_high] = 0;
                     index_high--;
-                    z_score_trimming_flag_converged = false;
+                    flag_converged = false;
+                }
+                if (flag_converged) {
+                    break;
                 }
             }
-            __syncthreads();
-            if (z_score_trimming_flag_converged) {
-                break;
-            }
-        }
-
-        // Huber loss
-        __syncthreads();
-        if (threadIdx.x == 0) {
             loss = 0;
             for (int i = 0; i < dimension; i++) {
                 gradient[i] = 0;
             }
         }
+
+        // Calculate Huber Loss and gradient
         __syncthreads();
-        residual = residuals[threadIdx.x];
+        const float residual = residuals[threadIdx.x];
         const float abs_residual = std::abs(residual);
         if (abs_residual <= huber_loss_threashold) {
             atomicAdd(&loss, residual * residual / 2);
             for (int j = 0; j < dimension; j++) {
-                atomicAdd(gradient + j, residual * X[indices[threadIdx.x] * dimension + j]);
+                atomicAdd(gradient + j, residual * X[j * sample_size + indices[threadIdx.x]]);
             }
         }
         else {
             atomicAdd(&loss, abs_residual * huber_loss_threashold - huber_loss_threashold * huber_loss_threashold / 2);
             for (int j = 0; j < dimension; j++) {
-                atomicAdd(gradient + j, ((residual > 0) - (residual < 0)) * X[indices[threadIdx.x] * dimension + j] * huber_loss_threashold);
+                atomicAdd(gradient + j, ((residual > 0) - (residual < 0)) * X[j * sample_size + indices[threadIdx.x]] * huber_loss_threashold);
             }
-        }
-        __syncthreads();
-        if (threadIdx.x == 0) {
-            for (int i = 0; i < dimension; i++) {
-                gradient[i] /= batch_size;
-            }
-            loss /= batch_size;
         }
 
         // Update weights
         __syncthreads();
         if (threadIdx.x == 0) {
             for (int i = 0; i < dimension; i++) {
-                w[i] -= learning_rate * gradient[i];
+                w[i] -= learning_rate * gradient[i] / (index_high - index_low + 1);
             }
         }
 
         // Check convergence
         __syncthreads();
         if (std::abs((loss - prev_loss) / prev_loss) < 1e-5) {
-            return;
+            break;
         }
+        prev_loss = loss;
+    }
 
-        if (threadIdx.x == 0) {
-            prev_loss = loss;
+    // Write to global memory
+    if (threadIdx.x == 0) {
+        for (int i = 0; i < dimension; i++) {
+            _w[i] = w[i];
         }
     }
 }
@@ -294,9 +206,9 @@ int main(void) {
     // Read training data
     FILE* f = fopen("in.txt", "r");
     for (int i = 0; i < sample_size; i++) {
-        X[i * dimension] = 1;
+        X[i] = 1;
         for (int j = 1; j < dimension; j++) {
-            fscanf(f, "%f", X + i * dimension + j);
+            fscanf(f, "%f", X + j * sample_size + i);
         }
         fscanf(f, "%f", y + i);
     }
