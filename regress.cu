@@ -2,18 +2,22 @@
 #include <ctime>
 #include <curand_kernel.h>
 
+constexpr int model_count = 100;
+
 // Hyperparameters
 constexpr float huber_loss_threashold = 10;
 constexpr float z_score_trimming_threashold = 2;
 constexpr float epsilon = 0.49;
 constexpr float learning_rate = 0.01;
 constexpr int batch_size = 128;
-constexpr int max_iter = 100000;
+constexpr int max_iter = 10000;
 
 constexpr int sample_size = 1000;
 constexpr int dimension = 6;
 
-template<int block_size> __global__ void kernel(float* const X, float* const y, float* const _w, const clock_t seed) {
+template<int block_size> __global__ void kernel(float* const _X, float* const _y, float* const _w, const clock_t seed) {
+    float* const X = _X + blockIdx.x * sample_size * dimension;
+    float* const y = _y + blockIdx.x * sample_size;
     __shared__ float w[dimension];
     __shared__ int indices[batch_size];
     int indices_copy[batch_size];
@@ -88,7 +92,7 @@ template<int block_size> __global__ void kernel(float* const X, float* const y, 
                     }
                 }
                 else {
-                    for (k = j_end - 1;k >= j; k--) {
+                    for (k = j_end - 1; k >= j; k--) {
                         residuals[k + k_end - j_end] = residuals[k];
                         indices[k + k_end - j_end] = indices[k];
                     }
@@ -267,7 +271,7 @@ template<int block_size> __global__ void kernel(float* const X, float* const y, 
         // Check convergence
         __syncthreads();
         if (std::abs((loss - prev_loss) / prev_loss) < 1e-4) {
-            break;
+            //break;
         }
         prev_loss = loss;
     }
@@ -275,15 +279,15 @@ template<int block_size> __global__ void kernel(float* const X, float* const y, 
     // Write to global memory
     if (threadIdx.x == 0) {
         for (int i = 0; i < dimension; i++) {
-            _w[i] = w[i];
+            _w[blockIdx.x * dimension + i] = w[i];
         }
     }
 }
 
 int main(void) {
-    float X[sample_size * dimension];
-    float y[sample_size];
-    float w[dimension];
+    float X[sample_size * dimension * model_count];
+    float y[sample_size * model_count];
+    float w[dimension * model_count];
     srand(clock());
 
     // Read training data
@@ -295,22 +299,26 @@ int main(void) {
         }
         fscanf(f, "%f", y + i);
     }
+    for (int i = 0; i < model_count; i++) {
+        memcpy(X + i * sample_size * dimension, X, sample_size * dimension * sizeof(float));
+        memcpy(y + i * sample_size, y, sample_size * sizeof(float));
+    }
     fclose(f);
 
     // Allocate device memory
     float* device_X, * device_y, * device_w;
-    cudaMalloc(&device_X, sample_size * dimension * sizeof(float));
-    cudaMalloc(&device_y, sample_size * sizeof(float));
-    cudaMalloc(&device_w, dimension * sizeof(float));
+    cudaMalloc(&device_X, sample_size * dimension * model_count * sizeof(float));
+    cudaMalloc(&device_y, sample_size * model_count * sizeof(float));
+    cudaMalloc(&device_w, dimension * model_count * sizeof(float));
 
     // Copy input to device memory
-    cudaMemcpy(device_X, X, sample_size * dimension * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(device_y, y, sample_size * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(device_X, X, sample_size * dimension * model_count * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(device_y, y, sample_size * model_count * sizeof(float), cudaMemcpyHostToDevice);
 
     // Start timing
     clock_t clk = clock();
 
-    kernel<batch_size> << <1, batch_size >> > (device_X, device_y, device_w, clk);
+    kernel<batch_size> << <model_count, batch_size >> > (device_X, device_y, device_w, clk);
 
     // Stop timing
     cudaDeviceSynchronize();
@@ -318,7 +326,7 @@ int main(void) {
     printf("CUDA running time:\t%.3fms\n", (double)clk / CLOCKS_PER_SEC * 1000);
 
     // Copy output to host memory
-    cudaMemcpy(w, device_w, dimension * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(w, device_w, dimension * model_count * sizeof(float), cudaMemcpyDeviceToHost);
 
     // Free device memory
     cudaFree(device_X);
@@ -327,9 +335,9 @@ int main(void) {
 
     // Write the trained weights
     f = fopen("out.txt", "w");
-    fprintf(f, "%f", *w);
+    fprintf(f, "%f", w[(model_count - 1) * dimension]);
     for (int i = 1; i < dimension; i++) {
-        fprintf(f, " %f", w[i]);
+        fprintf(f, " %f", w[(model_count - 1) * dimension + i]);
     }
     fclose(f);
 

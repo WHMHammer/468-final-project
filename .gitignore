@@ -1,5 +1,6 @@
 venv
-regress
+regress_cpp
+regress_cuda
 in.txt
 out.txt
 training.png

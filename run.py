@@ -136,7 +136,11 @@ with open("in.txt", "w") as f:
             f.write(f"{X[i][j]} ")
         f.write(f" {y_training[i]}\n")
 
-p = Process(target=execl, args=("regress", "regress"))
+p = Process(target=execl, args=("regress_cpp", "regress_cpp"))
+p.start()
+p.join()
+
+p = Process(target=execl, args=("regress_cuda", "regress_cuda"))
 p.start()
 p.join()
 

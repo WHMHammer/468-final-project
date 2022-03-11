@@ -12,8 +12,8 @@ For more details on the model itself, please visit the [Robust Mini-Batch Gradie
 
 ```
 make dependencies    # only before the first run
-make
-make run
+make                 # build both the C++ and the CUDA implementations
+make run             # run the same test on both implementations
 # make clean         # to clean up the binaries and input/output files generated
 # make clobber       # to also clean up the graphs and python virtual environment
 ```
