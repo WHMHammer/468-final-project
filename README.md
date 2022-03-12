@@ -35,10 +35,6 @@ CUDA running time:      639.351ms
 
 - Use local/shared memory to cache the batches
 
-- Parallelize epsilon-trimming
-
-- Fully parallelize z-score-trimming
-
 - Replace atomic additions in loss and gradient with reduction
 
 - Let the threads in the same warp use the same loss function (either squared or absolute) to prevent thread divergence
@@ -59,7 +55,9 @@ CUDA running time:      639.351ms
 
 - Parallelized merge sort
 
-- (Partially) parallelized z-score-trimming
+- Parallelize epsilon-trimming
+
+- Parallelize z-score-trimming
 
 - Parallelized loss and gradient calculation
 

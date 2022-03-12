@@ -20,14 +20,12 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
     float* const y = _y + blockIdx.x * sample_size;
     __shared__ float w[dimension];
     __shared__ int indices[batch_size];
-    int indices_copy[batch_size];
+    __shared__ int indices_copy[batch_size];
     __shared__ float residuals[batch_size];
     __shared__ float residuals_copy[batch_size];
     __shared__ float gradient[dimension];
     __shared__ float prev_loss;
     __shared__ float loss;
-    __shared__ int index_low;
-    __shared__ int index_high;
     __shared__ bool z_score_trimming_flag_converged;
     curandState_t state;
     curand_init(seed, 0, 0, &state);
@@ -50,477 +48,469 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
             residuals[threadIdx.x] += X[j * sample_size + indices[threadIdx.x]] * w[j];
         }
 
-        // Merge sort residuals and permute the indices accordingly
-        if (block_size > 1 && threadIdx.x % 2 == 1) {
-            if (residuals[threadIdx.x] < residuals[threadIdx.x - 1]) {
-                const float tmp_float = residuals[threadIdx.x];
-                residuals[threadIdx.x] = residuals[threadIdx.x - 1];
-                residuals[threadIdx.x - 1] = tmp_float;
-                const int tmp_int = indices[threadIdx.x];
-                indices[threadIdx.x] = indices[threadIdx.x - 1];
-                indices[threadIdx.x - 1] = tmp_int;
+        // Merge sort (absolute) residuals and permute the indices accordingly
+        {
+            if (block_size > 1 && threadIdx.x % 2 == 1) {
+                if (abs(residuals[threadIdx.x]) < abs(residuals[threadIdx.x - 1])) {
+                    const float tmp_float = residuals[threadIdx.x];
+                    residuals[threadIdx.x] = residuals[threadIdx.x - 1];
+                    residuals[threadIdx.x - 1] = tmp_float;
+                    const int tmp_int = indices[threadIdx.x];
+                    indices[threadIdx.x] = indices[threadIdx.x - 1];
+                    indices[threadIdx.x - 1] = tmp_int;
+                }
             }
-        }
-        __syncthreads();
-        if (block_size > 2 && threadIdx.x % 4 == 0) {
-            int j = threadIdx.x;
-            const int j_end = threadIdx.x + 2;
-            int k = j_end;
-            const int k_end = threadIdx.x + 4;
-            int l = threadIdx.x;
-            while (j != j_end && k != k_end) {
-                if (residuals[j] < residuals[k]) {
-                    residuals_copy[l] = residuals[j];
-                    indices_copy[l] = indices[j];
-                    j++;
+            __syncthreads();
+            if (block_size > 2 && threadIdx.x % 4 == 0) {
+                int j = threadIdx.x;
+                const int j_end = threadIdx.x + 2;
+                int k = j_end;
+                const int k_end = threadIdx.x + 4;
+                int l = threadIdx.x;
+                while (j != j_end && k != k_end) {
+                    if (abs(residuals[j]) < abs(residuals[k])) {
+                        residuals_copy[l] = residuals[j];
+                        indices_copy[l] = indices[j];
+                        j++;
+                    }
+                    else {
+                        residuals_copy[l] = residuals[k];
+                        indices_copy[l] = indices[k];
+                        k++;
+                    }
+                    l++;
+                }
+                if (j == j_end) {
+                    for (j = threadIdx.x; j < l; j++) {
+                        residuals[j] = residuals_copy[j];
+                        indices[j] = indices_copy[j];
+                    }
                 }
                 else {
-                    residuals_copy[l] = residuals[k];
-                    indices_copy[l] = indices[k];
-                    k++;
-                }
-                l++;
-            }
-            if (j == j_end) {
-                for (j = threadIdx.x; j < l; j++) {
-                    residuals[j] = residuals_copy[j];
-                    indices[j] = indices_copy[j];
+                    for (k = j_end - 1; k >= j; k--) {
+                        residuals[k + k_end - j_end] = residuals[k];
+                        indices[k + k_end - j_end] = indices[k];
+                    }
+                    for (k = threadIdx.x; k < l; k++) {
+                        residuals[k] = residuals_copy[k];
+                        indices[k] = indices_copy[k];
+                    }
                 }
             }
-            else {
-                for (k = j_end - 1; k >= j; k--) {
-                    residuals[k + k_end - j_end] = residuals[k];
-                    indices[k + k_end - j_end] = indices[k];
+            __syncthreads();
+            if (block_size > 4 && threadIdx.x % 8 == 0) {
+                int j = threadIdx.x;
+                const int j_end = threadIdx.x + 4;
+                int k = j_end;
+                const int k_end = threadIdx.x + 8;
+                int l = threadIdx.x;
+                while (j != j_end && k != k_end) {
+                    if (abs(residuals[j]) < abs(residuals[k])) {
+                        residuals_copy[l] = residuals[j];
+                        indices_copy[l] = indices[j];
+                        j++;
+                    }
+                    else {
+                        residuals_copy[l] = residuals[k];
+                        indices_copy[l] = indices[k];
+                        k++;
+                    }
+                    l++;
                 }
-                for (k = threadIdx.x; k < l; k++) {
-                    residuals[k] = residuals_copy[k];
-                    indices[k] = indices_copy[k];
-                }
-            }
-        }
-        __syncthreads();
-        if (block_size > 4 && threadIdx.x % 8 == 0) {
-            int j = threadIdx.x;
-            const int j_end = threadIdx.x + 4;
-            int k = j_end;
-            const int k_end = threadIdx.x + 8;
-            int l = threadIdx.x;
-            while (j != j_end && k != k_end) {
-                if (residuals[j] < residuals[k]) {
-                    residuals_copy[l] = residuals[j];
-                    indices_copy[l] = indices[j];
-                    j++;
+                if (j == j_end) {
+                    for (j = threadIdx.x; j < l; j++) {
+                        residuals[j] = residuals_copy[j];
+                        indices[j] = indices_copy[j];
+                    }
                 }
                 else {
-                    residuals_copy[l] = residuals[k];
-                    indices_copy[l] = indices[k];
-                    k++;
-                }
-                l++;
-            }
-            if (j == j_end) {
-                for (j = threadIdx.x; j < l; j++) {
-                    residuals[j] = residuals_copy[j];
-                    indices[j] = indices_copy[j];
+                    for (k = j_end - 1; k >= j; k--) {
+                        residuals[k + k_end - j_end] = residuals[k];
+                        indices[k + k_end - j_end] = indices[k];
+                    }
+                    for (k = threadIdx.x; k < l; k++) {
+                        residuals[k] = residuals_copy[k];
+                        indices[k] = indices_copy[k];
+                    }
                 }
             }
-            else {
-                for (k = j_end - 1; k >= j; k--) {
-                    residuals[k + k_end - j_end] = residuals[k];
-                    indices[k + k_end - j_end] = indices[k];
+            __syncthreads();
+            if (block_size > 8 && threadIdx.x % 16 == 0) {
+                int j = threadIdx.x;
+                const int j_end = threadIdx.x + 8;
+                int k = j_end;
+                const int k_end = threadIdx.x + 16;
+                int l = threadIdx.x;
+                while (j != j_end && k != k_end) {
+                    if (abs(residuals[j]) < abs(residuals[k])) {
+                        residuals_copy[l] = residuals[j];
+                        indices_copy[l] = indices[j];
+                        j++;
+                    }
+                    else {
+                        residuals_copy[l] = residuals[k];
+                        indices_copy[l] = indices[k];
+                        k++;
+                    }
+                    l++;
                 }
-                for (k = threadIdx.x; k < l; k++) {
-                    residuals[k] = residuals_copy[k];
-                    indices[k] = indices_copy[k];
-                }
-            }
-        }
-        __syncthreads();
-        if (block_size > 8 && threadIdx.x % 16 == 0) {
-            int j = threadIdx.x;
-            const int j_end = threadIdx.x + 8;
-            int k = j_end;
-            const int k_end = threadIdx.x + 16;
-            int l = threadIdx.x;
-            while (j != j_end && k != k_end) {
-                if (residuals[j] < residuals[k]) {
-                    residuals_copy[l] = residuals[j];
-                    indices_copy[l] = indices[j];
-                    j++;
+                if (j == j_end) {
+                    for (j = threadIdx.x; j < l; j++) {
+                        residuals[j] = residuals_copy[j];
+                        indices[j] = indices_copy[j];
+                    }
                 }
                 else {
-                    residuals_copy[l] = residuals[k];
-                    indices_copy[l] = indices[k];
-                    k++;
-                }
-                l++;
-            }
-            if (j == j_end) {
-                for (j = threadIdx.x; j < l; j++) {
-                    residuals[j] = residuals_copy[j];
-                    indices[j] = indices_copy[j];
+                    for (k = j_end - 1; k >= j; k--) {
+                        residuals[k + k_end - j_end] = residuals[k];
+                        indices[k + k_end - j_end] = indices[k];
+                    }
+                    for (k = threadIdx.x; k < l; k++) {
+                        residuals[k] = residuals_copy[k];
+                        indices[k] = indices_copy[k];
+                    }
                 }
             }
-            else {
-                for (k = j_end - 1; k >= j; k--) {
-                    residuals[k + k_end - j_end] = residuals[k];
-                    indices[k + k_end - j_end] = indices[k];
+            __syncthreads();
+            if (block_size > 16 && threadIdx.x % 32 == 0) {
+                int j = threadIdx.x;
+                const int j_end = threadIdx.x + 16;
+                int k = j_end;
+                const int k_end = threadIdx.x + 32;
+                int l = threadIdx.x;
+                while (j != j_end && k != k_end) {
+                    if (abs(residuals[j]) < abs(residuals[k])) {
+                        residuals_copy[l] = residuals[j];
+                        indices_copy[l] = indices[j];
+                        j++;
+                    }
+                    else {
+                        residuals_copy[l] = residuals[k];
+                        indices_copy[l] = indices[k];
+                        k++;
+                    }
+                    l++;
                 }
-                for (k = threadIdx.x; k < l; k++) {
-                    residuals[k] = residuals_copy[k];
-                    indices[k] = indices_copy[k];
-                }
-            }
-        }
-        __syncthreads();
-        if (block_size > 16 && threadIdx.x % 32 == 0) {
-            int j = threadIdx.x;
-            const int j_end = threadIdx.x + 16;
-            int k = j_end;
-            const int k_end = threadIdx.x + 32;
-            int l = threadIdx.x;
-            while (j != j_end && k != k_end) {
-                if (residuals[j] < residuals[k]) {
-                    residuals_copy[l] = residuals[j];
-                    indices_copy[l] = indices[j];
-                    j++;
+                if (j == j_end) {
+                    for (j = threadIdx.x; j < l; j++) {
+                        residuals[j] = residuals_copy[j];
+                        indices[j] = indices_copy[j];
+                    }
                 }
                 else {
-                    residuals_copy[l] = residuals[k];
-                    indices_copy[l] = indices[k];
-                    k++;
-                }
-                l++;
-            }
-            if (j == j_end) {
-                for (j = threadIdx.x; j < l; j++) {
-                    residuals[j] = residuals_copy[j];
-                    indices[j] = indices_copy[j];
+                    for (k = j_end - 1; k >= j; k--) {
+                        residuals[k + k_end - j_end] = residuals[k];
+                        indices[k + k_end - j_end] = indices[k];
+                    }
+                    for (k = threadIdx.x; k < l; k++) {
+                        residuals[k] = residuals_copy[k];
+                        indices[k] = indices_copy[k];
+                    }
                 }
             }
-            else {
-                for (k = j_end - 1; k >= j; k--) {
-                    residuals[k + k_end - j_end] = residuals[k];
-                    indices[k + k_end - j_end] = indices[k];
+            __syncthreads();
+            if (block_size > 32 && threadIdx.x % 64 == 0) {
+                int j = threadIdx.x;
+                const int j_end = threadIdx.x + 32;
+                int k = j_end;
+                const int k_end = threadIdx.x + 64;
+                int l = threadIdx.x;
+                while (j != j_end && k != k_end) {
+                    if (abs(residuals[j]) < abs(residuals[k])) {
+                        residuals_copy[l] = residuals[j];
+                        indices_copy[l] = indices[j];
+                        j++;
+                    }
+                    else {
+                        residuals_copy[l] = residuals[k];
+                        indices_copy[l] = indices[k];
+                        k++;
+                    }
+                    l++;
                 }
-                for (k = threadIdx.x; k < l; k++) {
-                    residuals[k] = residuals_copy[k];
-                    indices[k] = indices_copy[k];
-                }
-            }
-        }
-        __syncthreads();
-        if (block_size > 32 && threadIdx.x % 64 == 0) {
-            int j = threadIdx.x;
-            const int j_end = threadIdx.x + 32;
-            int k = j_end;
-            const int k_end = threadIdx.x + 64;
-            int l = threadIdx.x;
-            while (j != j_end && k != k_end) {
-                if (residuals[j] < residuals[k]) {
-                    residuals_copy[l] = residuals[j];
-                    indices_copy[l] = indices[j];
-                    j++;
+                if (j == j_end) {
+                    for (j = threadIdx.x; j < l; j++) {
+                        residuals[j] = residuals_copy[j];
+                        indices[j] = indices_copy[j];
+                    }
                 }
                 else {
-                    residuals_copy[l] = residuals[k];
-                    indices_copy[l] = indices[k];
-                    k++;
-                }
-                l++;
-            }
-            if (j == j_end) {
-                for (j = threadIdx.x; j < l; j++) {
-                    residuals[j] = residuals_copy[j];
-                    indices[j] = indices_copy[j];
+                    for (k = j_end - 1; k >= j; k--) {
+                        residuals[k + k_end - j_end] = residuals[k];
+                        indices[k + k_end - j_end] = indices[k];
+                    }
+                    for (k = threadIdx.x; k < l; k++) {
+                        residuals[k] = residuals_copy[k];
+                        indices[k] = indices_copy[k];
+                    }
                 }
             }
-            else {
-                for (k = j_end - 1; k >= j; k--) {
-                    residuals[k + k_end - j_end] = residuals[k];
-                    indices[k + k_end - j_end] = indices[k];
+            __syncthreads();
+            if (block_size > 64 && threadIdx.x % 128 == 0) {
+                int j = threadIdx.x;
+                const int j_end = threadIdx.x + 64;
+                int k = j_end;
+                const int k_end = threadIdx.x + 128;
+                int l = threadIdx.x;
+                while (j != j_end && k != k_end) {
+                    if (abs(residuals[j]) < abs(residuals[k])) {
+                        residuals_copy[l] = residuals[j];
+                        indices_copy[l] = indices[j];
+                        j++;
+                    }
+                    else {
+                        residuals_copy[l] = residuals[k];
+                        indices_copy[l] = indices[k];
+                        k++;
+                    }
+                    l++;
                 }
-                for (k = threadIdx.x; k < l; k++) {
-                    residuals[k] = residuals_copy[k];
-                    indices[k] = indices_copy[k];
-                }
-            }
-        }
-        __syncthreads();
-        if (block_size > 64 && threadIdx.x % 128 == 0) {
-            int j = threadIdx.x;
-            const int j_end = threadIdx.x + 64;
-            int k = j_end;
-            const int k_end = threadIdx.x + 128;
-            int l = threadIdx.x;
-            while (j != j_end && k != k_end) {
-                if (residuals[j] < residuals[k]) {
-                    residuals_copy[l] = residuals[j];
-                    indices_copy[l] = indices[j];
-                    j++;
+                if (j == j_end) {
+                    for (j = threadIdx.x; j < l; j++) {
+                        residuals[j] = residuals_copy[j];
+                        indices[j] = indices_copy[j];
+                    }
                 }
                 else {
-                    residuals_copy[l] = residuals[k];
-                    indices_copy[l] = indices[k];
-                    k++;
-                }
-                l++;
-            }
-            if (j == j_end) {
-                for (j = threadIdx.x; j < l; j++) {
-                    residuals[j] = residuals_copy[j];
-                    indices[j] = indices_copy[j];
+                    for (k = j_end - 1; k >= j; k--) {
+                        residuals[k + k_end - j_end] = residuals[k];
+                        indices[k + k_end - j_end] = indices[k];
+                    }
+                    for (k = threadIdx.x; k < l; k++) {
+                        residuals[k] = residuals_copy[k];
+                        indices[k] = indices_copy[k];
+                    }
                 }
             }
-            else {
-                for (k = j_end - 1; k >= j; k--) {
-                    residuals[k + k_end - j_end] = residuals[k];
-                    indices[k + k_end - j_end] = indices[k];
+            __syncthreads();
+            if (block_size > 128 && threadIdx.x % 256 == 0) {
+                int j = threadIdx.x;
+                const int j_end = threadIdx.x + 128;
+                int k = j_end;
+                const int k_end = threadIdx.x + 256;
+                int l = threadIdx.x;
+                while (j != j_end && k != k_end) {
+                    if (abs(residuals[j]) < abs(residuals[k])) {
+                        residuals_copy[l] = residuals[j];
+                        indices_copy[l] = indices[j];
+                        j++;
+                    }
+                    else {
+                        residuals_copy[l] = residuals[k];
+                        indices_copy[l] = indices[k];
+                        k++;
+                    }
+                    l++;
                 }
-                for (k = threadIdx.x; k < l; k++) {
-                    residuals[k] = residuals_copy[k];
-                    indices[k] = indices_copy[k];
-                }
-            }
-        }
-        __syncthreads();
-        if (block_size > 128 && threadIdx.x % 256 == 0) {
-            int j = threadIdx.x;
-            const int j_end = threadIdx.x + 128;
-            int k = j_end;
-            const int k_end = threadIdx.x + 256;
-            int l = threadIdx.x;
-            while (j != j_end && k != k_end) {
-                if (residuals[j] < residuals[k]) {
-                    residuals_copy[l] = residuals[j];
-                    indices_copy[l] = indices[j];
-                    j++;
+                if (j == j_end) {
+                    for (j = threadIdx.x; j < l; j++) {
+                        residuals[j] = residuals_copy[j];
+                        indices[j] = indices_copy[j];
+                    }
                 }
                 else {
-                    residuals_copy[l] = residuals[k];
-                    indices_copy[l] = indices[k];
-                    k++;
-                }
-                l++;
-            }
-            if (j == j_end) {
-                for (j = threadIdx.x; j < l; j++) {
-                    residuals[j] = residuals_copy[j];
-                    indices[j] = indices_copy[j];
+                    for (k = j_end - 1; k >= j; k--) {
+                        residuals[k + k_end - j_end] = residuals[k];
+                        indices[k + k_end - j_end] = indices[k];
+                    }
+                    for (k = threadIdx.x; k < l; k++) {
+                        residuals[k] = residuals_copy[k];
+                        indices[k] = indices_copy[k];
+                    }
                 }
             }
-            else {
-                for (k = j_end - 1; k >= j; k--) {
-                    residuals[k + k_end - j_end] = residuals[k];
-                    indices[k + k_end - j_end] = indices[k];
+            __syncthreads();
+            if (block_size > 256 && threadIdx.x % 512 == 0) {
+                int j = threadIdx.x;
+                const int j_end = threadIdx.x + 256;
+                int k = j_end;
+                const int k_end = threadIdx.x + 512;
+                int l = threadIdx.x;
+                while (j != j_end && k != k_end) {
+                    if (abs(residuals[j]) < abs(residuals[k])) {
+                        residuals_copy[l] = residuals[j];
+                        indices_copy[l] = indices[j];
+                        j++;
+                    }
+                    else {
+                        residuals_copy[l] = residuals[k];
+                        indices_copy[l] = indices[k];
+                        k++;
+                    }
+                    l++;
                 }
-                for (k = threadIdx.x; k < l; k++) {
-                    residuals[k] = residuals_copy[k];
-                    indices[k] = indices_copy[k];
-                }
-            }
-        }
-        __syncthreads();
-        if (block_size > 256 && threadIdx.x % 512 == 0) {
-            int j = threadIdx.x;
-            const int j_end = threadIdx.x + 256;
-            int k = j_end;
-            const int k_end = threadIdx.x + 512;
-            int l = threadIdx.x;
-            while (j != j_end && k != k_end) {
-                if (residuals[j] < residuals[k]) {
-                    residuals_copy[l] = residuals[j];
-                    indices_copy[l] = indices[j];
-                    j++;
+                if (j == j_end) {
+                    for (j = threadIdx.x; j < l; j++) {
+                        residuals[j] = residuals_copy[j];
+                        indices[j] = indices_copy[j];
+                    }
                 }
                 else {
-                    residuals_copy[l] = residuals[k];
-                    indices_copy[l] = indices[k];
-                    k++;
-                }
-                l++;
-            }
-            if (j == j_end) {
-                for (j = threadIdx.x; j < l; j++) {
-                    residuals[j] = residuals_copy[j];
-                    indices[j] = indices_copy[j];
+                    for (k = j_end - 1; k >= j; k--) {
+                        residuals[k + k_end - j_end] = residuals[k];
+                        indices[k + k_end - j_end] = indices[k];
+                    }
+                    for (k = threadIdx.x; k < l; k++) {
+                        residuals[k] = residuals_copy[k];
+                        indices[k] = indices_copy[k];
+                    }
                 }
             }
-            else {
-                for (k = j_end - 1; k >= j; k--) {
-                    residuals[k + k_end - j_end] = residuals[k];
-                    indices[k + k_end - j_end] = indices[k];
+            __syncthreads();
+            if (block_size > 512 && threadIdx.x % 1024 == 0) {
+                int j = threadIdx.x;
+                const int j_end = threadIdx.x + 512;
+                int k = j_end;
+                const int k_end = threadIdx.x + 1024;
+                int l = threadIdx.x;
+                while (j != j_end && k != k_end) {
+                    if (abs(residuals[j]) < abs(residuals[k])) {
+                        residuals_copy[l] = residuals[j];
+                        indices_copy[l] = indices[j];
+                        j++;
+                    }
+                    else {
+                        residuals_copy[l] = residuals[k];
+                        indices_copy[l] = indices[k];
+                        k++;
+                    }
+                    l++;
                 }
-                for (k = threadIdx.x; k < l; k++) {
-                    residuals[k] = residuals_copy[k];
-                    indices[k] = indices_copy[k];
-                }
-            }
-        }
-        __syncthreads();
-        if (block_size > 512 && threadIdx.x % 1024 == 0) {
-            int j = threadIdx.x;
-            const int j_end = threadIdx.x + 512;
-            int k = j_end;
-            const int k_end = threadIdx.x + 1024;
-            int l = threadIdx.x;
-            while (j != j_end && k != k_end) {
-                if (residuals[j] < residuals[k]) {
-                    residuals_copy[l] = residuals[j];
-                    indices_copy[l] = indices[j];
-                    j++;
+                if (j == j_end) {
+                    for (j = threadIdx.x; j < l; j++) {
+                        residuals[j] = residuals_copy[j];
+                        indices[j] = indices_copy[j];
+                    }
                 }
                 else {
-                    residuals_copy[l] = residuals[k];
-                    indices_copy[l] = indices[k];
-                    k++;
-                }
-                l++;
-            }
-            if (j == j_end) {
-                for (j = threadIdx.x; j < l; j++) {
-                    residuals[j] = residuals_copy[j];
-                    indices[j] = indices_copy[j];
-                }
-            }
-            else {
-                for (k = j_end - 1; k >= j; k--) {
-                    residuals[k + k_end - j_end] = residuals[k];
-                    indices[k + k_end - j_end] = indices[k];
-                }
-                for (k = threadIdx.x; k < l; k++) {
-                    residuals[k] = residuals_copy[k];
-                    indices[k] = indices_copy[k];
+                    for (k = j_end - 1; k >= j; k--) {
+                        residuals[k + k_end - j_end] = residuals[k];
+                        indices[k + k_end - j_end] = indices[k];
+                    }
+                    for (k = threadIdx.x; k < l; k++) {
+                        residuals[k] = residuals_copy[k];
+                        indices[k] = indices_copy[k];
+                    }
                 }
             }
         }
-        __syncthreads();
 
         // Epsilon-trimming
-        if (threadIdx.x == 0) {
-            index_low = 0;
-            float abs_residual_low = std::abs(residuals[0]);
-            index_high = batch_size - 1;
-            float abs_residual_high = std::abs(residuals[batch_size - 1]);
-            for (int i = 0; i < (int)(batch_size * epsilon); i++) {
-                if (abs_residual_low < abs_residual_high) {
-                    residuals[index_high] = 0;
-                    index_high--;
-                    abs_residual_high = std::abs(residuals[index_high]);
-                }
-                else {
-                    residuals[index_low] = 0;
-                    index_low++;
-                    abs_residual_low = std::abs(residuals[index_low]);
-                }
-            }
+        __syncthreads();
+        if (threadIdx.x >= batch_size * (1 - epsilon)) {
+            residuals[threadIdx.x] = 0;
         }
 
         // Z-score-trimming
         __syncthreads();
         while (true) {
-            residuals_copy[threadIdx.x] = residuals[threadIdx.x];
-            __syncthreads();
-            if (block_size > 512 && threadIdx.x < 512) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 512];
+            {
+                residuals_copy[threadIdx.x] = residuals[threadIdx.x];
+                indices_copy[threadIdx.x] = residuals[threadIdx.x] != 0;
+                __syncthreads();
+                if (block_size > 512 && threadIdx.x < 512) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 512];
+                    indices_copy[threadIdx.x] += indices_copy[threadIdx.x + 512];
+                }
+                __syncthreads();
+                if (block_size > 256 && threadIdx.x < 256) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 256];
+                    indices_copy[threadIdx.x] += indices_copy[threadIdx.x + 256];
+                }
+                __syncthreads();
+                if (block_size > 128 && threadIdx.x < 128) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 128];
+                    indices_copy[threadIdx.x] += indices_copy[threadIdx.x + 128];
+                }
+                __syncthreads();
+                if (block_size > 64 && threadIdx.x < 64) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 64];
+                    indices_copy[threadIdx.x] += indices_copy[threadIdx.x + 64];
+                }
+                __syncthreads();
+                if (block_size > 32 && threadIdx.x < 32) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 32];
+                    indices_copy[threadIdx.x] += indices_copy[threadIdx.x + 32];
+                }
+                __syncthreads();
+                if (block_size > 16 && threadIdx.x < 16) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 16];
+                    indices_copy[threadIdx.x] += indices_copy[threadIdx.x + 16];
+                }
+                __syncthreads();
+                if (block_size > 8 && threadIdx.x < 8) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 8];
+                    indices_copy[threadIdx.x] += indices_copy[threadIdx.x + 8];
+                }
+                __syncthreads();
+                if (block_size > 4 && threadIdx.x < 4) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 4];
+                    indices_copy[threadIdx.x] += indices_copy[threadIdx.x + 4];
+                }
+                __syncthreads();
+                if (block_size > 2 && threadIdx.x < 2) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 2];
+                    indices_copy[threadIdx.x] += indices_copy[threadIdx.x + 2];
+                }
+                __syncthreads();
+                if (block_size > 1 && threadIdx.x < 1) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 1];
+                    indices_copy[threadIdx.x] += indices_copy[threadIdx.x + 1];
+                }
+                __syncthreads();
             }
-            __syncthreads();
-            if (block_size > 256 && threadIdx.x < 256) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 256];
-            }
-            __syncthreads();
-            if (block_size > 128 && threadIdx.x < 128) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 128];
-            }
-            __syncthreads();
-            if (block_size > 64 && threadIdx.x < 64) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 64];
-            }
-            __syncthreads();
-            if (block_size > 32 && threadIdx.x < 32) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 32];
-            }
-            __syncthreads();
-            if (block_size > 16 && threadIdx.x < 16) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 16];
-            }
-            __syncthreads();
-            if (block_size > 8 && threadIdx.x < 8) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 8];
-            }
-            __syncthreads();
-            if (block_size > 4 && threadIdx.x < 4) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 4];
-            }
-            __syncthreads();
-            if (block_size > 2 && threadIdx.x < 2) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 2];
-            }
-            __syncthreads();
-            if (block_size > 1 && threadIdx.x < 1) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 1];
-            }
-            __syncthreads();
-            const float mean = residuals_copy[0] / (index_high - index_low);
+            const float mean = residuals_copy[0] / indices_copy[0];
             const float diff = residuals[threadIdx.x] - mean;
-            __syncthreads();
-            residuals_copy[threadIdx.x] = (threadIdx.x >= index_low && threadIdx.x <= index_high) ? diff * diff : 0;
-            __syncthreads();
-            if (block_size > 512 && threadIdx.x < 512) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 512];
+            {
+                __syncthreads();
+                residuals_copy[threadIdx.x] = (residuals[threadIdx.x] != 0) * diff * diff / indices_copy[0];
+                __syncthreads();
+                if (block_size > 512 && threadIdx.x < 512) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 512];
+                }
+                __syncthreads();
+                if (block_size > 256 && threadIdx.x < 256) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 256];
+                }
+                __syncthreads();
+                if (block_size > 128 && threadIdx.x < 128) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 128];
+                }
+                __syncthreads();
+                if (block_size > 64 && threadIdx.x < 64) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 64];
+                }
+                __syncthreads();
+                if (block_size > 32 && threadIdx.x < 32) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 32];
+                }
+                __syncthreads();
+                if (block_size > 16 && threadIdx.x < 16) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 16];
+                }
+                __syncthreads();
+                if (block_size > 8 && threadIdx.x < 8) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 8];
+                }
+                __syncthreads();
+                if (block_size > 4 && threadIdx.x < 4) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 4];
+                }
+                __syncthreads();
+                if (block_size > 2 && threadIdx.x < 2) {
+                    residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 2];
+                }
+                __syncthreads();
             }
-            __syncthreads();
-            if (block_size > 256 && threadIdx.x < 256) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 256];
-            }
-            __syncthreads();
-            if (block_size > 128 && threadIdx.x < 128) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 128];
-            }
-            __syncthreads();
-            if (block_size > 64 && threadIdx.x < 64) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 64];
-            }
-            __syncthreads();
-            if (block_size > 32 && threadIdx.x < 32) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 32];
-            }
-            __syncthreads();
-            if (block_size > 16 && threadIdx.x < 16) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 16];
-            }
-            __syncthreads();
-            if (block_size > 8 && threadIdx.x < 8) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 8];
-            }
-            __syncthreads();
-            if (block_size > 4 && threadIdx.x < 4) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 4];
-            }
-            __syncthreads();
-            if (block_size > 2 && threadIdx.x < 2) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 2];
-            }
-            __syncthreads();
-            if (block_size > 1 && threadIdx.x < 1) {
-                residuals_copy[threadIdx.x] += residuals_copy[threadIdx.x + 1];
-            }
-            __syncthreads();
-            if (threadIdx.x == 0) {
-                float stdev = sqrt(residuals_copy[0] / (index_high - index_low));
+            if (block_size > 1 && threadIdx.x == 0) {
+                residuals_copy[threadIdx.x] = sqrt(residuals_copy[0] + residuals_copy[1]);
                 z_score_trimming_flag_converged = true;
-                const float threashold_low = mean - stdev * z_score_trimming_threashold;
-                while (residuals[index_low] < threashold_low) {
-                    residuals[index_low] = 0;
-                    index_low++;
-                    z_score_trimming_flag_converged = false;
-                }
-                const float threashold_high = mean + stdev * z_score_trimming_threashold;
-                while (residuals[index_high] > threashold_high) {
-                    residuals[index_high] = 0;
-                    index_high--;
-                    z_score_trimming_flag_converged = false;
-                }
+            }
+            __syncthreads();
+            const float stdev = residuals_copy[0];
+            if (residuals[threadIdx.x] != 0 && (residuals[threadIdx.x] < mean - stdev * z_score_trimming_threashold || residuals[threadIdx.x] >  mean + stdev * z_score_trimming_threashold)) {
+                residuals[threadIdx.x] = 0;
+                z_score_trimming_flag_converged = false;
             }
             __syncthreads();
             if (z_score_trimming_flag_converged) {
@@ -537,8 +527,8 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
         }
         __syncthreads();
         const float residual = residuals[threadIdx.x];
-        const float abs_residual = std::abs(residual);
-        if (abs_residual <= huber_loss_threashold) {
+        const float abs_residual = abs(residual);
+        if (residuals[threadIdx.x / 32 * 32] <= huber_loss_threashold) {
             atomicAdd(&loss, residual * residual / 2);
             for (int j = 0; j < dimension; j++) {
                 atomicAdd(gradient + j, residual * X[j * sample_size + indices[threadIdx.x]]);
@@ -555,13 +545,13 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
         __syncthreads();
         if (threadIdx.x == 0) {
             for (int i = 0; i < dimension; i++) {
-                w[i] -= learning_rate * gradient[i] / (index_high - index_low + 1);
+                w[i] -= learning_rate * gradient[i] / indices_copy[0];
             }
         }
 
         // Check convergence
         __syncthreads();
-        if (std::abs((loss - prev_loss) / prev_loss) < 1e-4) {
+        if (abs((loss - prev_loss) / prev_loss) < 1e-4) {
             //break;
         }
         prev_loss = loss;
@@ -609,7 +599,7 @@ int main(void) {
     // Start timing
     clock_t clk = clock();
 
-    kernel<batch_size> << <model_count, batch_size >> > (device_X, device_y, device_w, clk);
+    kernel<batch_size><<<model_count, batch_size>>>(device_X, device_y, device_w, clk);
 
     // Stop timing
     cudaDeviceSynchronize();
