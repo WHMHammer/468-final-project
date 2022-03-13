@@ -2,7 +2,7 @@
 #include <ctime>
 #include <curand_kernel.h>
 
-constexpr int model_count = 100;
+constexpr int model_count = 1000;
 
 // Hyperparameters
 constexpr float huber_loss_threashold = 10;
@@ -15,36 +15,41 @@ constexpr int max_iter = 10000;
 constexpr int sample_size = 1000;
 constexpr int dimension = 6;
 
-template<int block_size> __global__ void kernel(float* const _X, float* const _y, float* const _w, const clock_t seed) {
-    float* const X = _X + blockIdx.x * sample_size * dimension;
-    float* const y = _y + blockIdx.x * sample_size;
+template<int block_size> __global__ void kernel(float* const global_X, float* const global_y, float* const global_w, const clock_t seed) {
+    __shared__ float X[dimension * batch_size];
+    __shared__ float y[batch_size];
     __shared__ float w[dimension];
     __shared__ int indices[batch_size];
-    __shared__ int shared_int_batch_size_buffer[batch_size];
     __shared__ float residuals[batch_size];
-    __shared__ float shared_float_batch_size_buffer[batch_size];
     __shared__ float gradient[dimension * batch_size];
-    __shared__ float prev_loss;
-    __shared__ bool z_score_trimming_flag_converged;
-    curandState_t state;
-    curand_init(seed, 0, 0, &state);
+    __shared__ float shared_float_batch_size_buffer[batch_size];
+    __shared__ int shared_int_batch_size_buffer[batch_size];
+    __shared__ bool flag_z_score_trimming_converged;
 
     // Initialization
     if (threadIdx.x == 0) {
         for (int i = 0; i < dimension; i++) {
             w[i] = 1;
         }
-        prev_loss = 0;
     }
+    float prev_loss;
+    curandState_t state;
+    curand_init(seed, 0, 0, &state);
 
     for (int _ = -1; _ < max_iter; _++) {
         // Sample a consecutive batch with random starting index
-        indices[threadIdx.x] = ((int)(curand_uniform(&state) * sample_size) + threadIdx.x) % sample_size;
+        const int sample_index = ((int)(curand_uniform(&state) * sample_size) + threadIdx.x) % sample_size;
+        for (int i = 0; i < dimension; i++) {
+            X[i * batch_size + threadIdx.x] = global_X[blockIdx.x * sample_size * dimension + i * sample_size + sample_index];
+        }
+        y[threadIdx.x] = global_y[blockIdx.x * sample_size + sample_index];
+        indices[threadIdx.x] = threadIdx.x;
 
         // Calculate residuals
-        residuals[threadIdx.x] = -y[indices[threadIdx.x]];
-        for (int j = 0; j < dimension; j++) {
-            residuals[threadIdx.x] += X[j * sample_size + indices[threadIdx.x]] * w[j];
+        __syncthreads();
+        residuals[threadIdx.x] = -y[threadIdx.x];
+        for (int i = 0; i < dimension; i++) {
+            residuals[threadIdx.x] += X[i * batch_size + threadIdx.x] * w[i];
         }
 
         // Merge sort (absolute) residuals and permute the indices accordingly
@@ -396,9 +401,7 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
 
         // Epsilon-trimming
         __syncthreads();
-        if (threadIdx.x >= batch_size * (1 - epsilon)) {
-            residuals[threadIdx.x] = 0;
-        }
+        residuals[threadIdx.x] *= threadIdx.x < batch_size* (1 - epsilon);
 
         // Z-score-trimming
         __syncthreads();
@@ -431,38 +434,37 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 32];
                     shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 32];
                 }
-                __syncthreads();
+                __syncwarp();
                 if (block_size > 16 && threadIdx.x < 16) {
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 16];
                     shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 16];
                 }
-                __syncthreads();
+                __syncwarp();
                 if (block_size > 8 && threadIdx.x < 8) {
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 8];
                     shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 8];
                 }
-                __syncthreads();
+                __syncwarp();
                 if (block_size > 4 && threadIdx.x < 4) {
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 4];
                     shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 4];
                 }
-                __syncthreads();
+                __syncwarp();
                 if (block_size > 2 && threadIdx.x < 2) {
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 2];
                     shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 2];
                 }
-                __syncthreads();
-                if (block_size > 1 && threadIdx.x < 1) {
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 1];
-                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 1];
+                __syncwarp();
+                if (block_size > 1 && threadIdx.x == 0) {
+                    shared_int_batch_size_buffer[0] += shared_int_batch_size_buffer[1];
                 }
-                __syncthreads();
             }
-            const float mean = shared_float_batch_size_buffer[0] / shared_int_batch_size_buffer[0];
+            __syncthreads();
+            const float mean = (shared_float_batch_size_buffer[0] + shared_float_batch_size_buffer[1]) / shared_int_batch_size_buffer[0];
             const float diff = residuals[threadIdx.x] - mean;
+            __syncthreads();
+            shared_float_batch_size_buffer[threadIdx.x] = (residuals[threadIdx.x] != 0) * diff * diff / shared_int_batch_size_buffer[0];
             {
-                __syncthreads();
-                shared_float_batch_size_buffer[threadIdx.x] = (residuals[threadIdx.x] != 0) * diff * diff / shared_int_batch_size_buffer[0];
                 __syncthreads();
                 if (block_size > 512 && threadIdx.x < 512) {
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 512];
@@ -483,36 +485,36 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
                 if (block_size > 32 && threadIdx.x < 32) {
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 32];
                 }
-                __syncthreads();
+                __syncwarp();
                 if (block_size > 16 && threadIdx.x < 16) {
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 16];
                 }
-                __syncthreads();
+                __syncwarp();
                 if (block_size > 8 && threadIdx.x < 8) {
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 8];
                 }
-                __syncthreads();
+                __syncwarp();
                 if (block_size > 4 && threadIdx.x < 4) {
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 4];
                 }
-                __syncthreads();
+                __syncwarp();
                 if (block_size > 2 && threadIdx.x < 2) {
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 2];
                 }
-                __syncthreads();
             }
+            __syncwarp();
             if (block_size > 1 && threadIdx.x == 0) {
-                shared_float_batch_size_buffer[threadIdx.x] = sqrt(shared_float_batch_size_buffer[0] + shared_float_batch_size_buffer[1]);
-                z_score_trimming_flag_converged = true;
+                shared_float_batch_size_buffer[0] = sqrt(shared_float_batch_size_buffer[0] + shared_float_batch_size_buffer[1]);
+                flag_z_score_trimming_converged = true;
             }
             __syncthreads();
             const float stdev = shared_float_batch_size_buffer[0];
             if (residuals[threadIdx.x] != 0 && (residuals[threadIdx.x] < mean - stdev * z_score_trimming_threashold || residuals[threadIdx.x] >  mean + stdev * z_score_trimming_threashold)) {
                 residuals[threadIdx.x] = 0;
-                z_score_trimming_flag_converged = false;
+                flag_z_score_trimming_converged = false;
             }
             __syncthreads();
-            if (z_score_trimming_flag_converged) {
+            if (flag_z_score_trimming_converged) {
                 break;
             }
         }
@@ -520,96 +522,89 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
         // Calculate Huber Loss and gradient
         const float residual = residuals[threadIdx.x];
         const float abs_residual = abs(residual);
-        if (residuals[threadIdx.x / 32 * 32] <= huber_loss_threashold) {
+        if (abs(residuals[threadIdx.x / 32 * 32]) <= huber_loss_threashold) {
             shared_float_batch_size_buffer[threadIdx.x] = residual * residual / 2;
-            for (int j = 0; j < dimension; j++) {
-                gradient[j * batch_size + threadIdx.x] = residual * X[j * sample_size + indices[threadIdx.x]];
+            for (int i = 0; i < dimension; i++) {
+                gradient[i * batch_size + threadIdx.x] = residual * X[i * batch_size + indices[threadIdx.x]];
             }
         }
         else {
             shared_float_batch_size_buffer[threadIdx.x] = abs_residual * huber_loss_threashold - huber_loss_threashold * huber_loss_threashold / 2;
-            for (int j = 0; j < dimension; j++) {
-                gradient[j * batch_size + threadIdx.x] = ((residual > 0) - (residual < 0)) * X[j * sample_size + indices[threadIdx.x]] * huber_loss_threashold;
+            for (int i = 0; i < dimension; i++) {
+                gradient[i * batch_size + threadIdx.x] = ((residual > 0) - (residual < 0)) * X[i * batch_size + indices[threadIdx.x]] * huber_loss_threashold;
             }
         }
         {
             __syncthreads();
             if (block_size > 512 && threadIdx.x < 512) {
                 shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 512];
-                for (int j = 0; j < dimension; j++) {
-                    gradient[j * batch_size + threadIdx.x] += gradient[j * batch_size + threadIdx.x + 512];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 512];
                 }
             }
             __syncthreads();
             if (block_size > 256 && threadIdx.x < 256) {
                 shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 256];
-                for (int j = 0; j < dimension; j++) {
-                    gradient[j * batch_size + threadIdx.x] += gradient[j * batch_size + threadIdx.x + 256];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 256];
                 }
             }
             __syncthreads();
             if (block_size > 128 && threadIdx.x < 128) {
                 shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 128];
-                for (int j = 0; j < dimension; j++) {
-                    gradient[j * batch_size + threadIdx.x] += gradient[j * batch_size + threadIdx.x + 128];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 128];
                 }
             }
             __syncthreads();
             if (block_size > 64 && threadIdx.x < 64) {
                 shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 64];
-                for (int j = 0; j < dimension; j++) {
-                    gradient[j * batch_size + threadIdx.x] += gradient[j * batch_size + threadIdx.x + 64];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 64];
                 }
             }
             __syncthreads();
             if (block_size > 32 && threadIdx.x < 32) {
                 shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 32];
-                for (int j = 0; j < dimension; j++) {
-                    gradient[j * batch_size + threadIdx.x] += gradient[j * batch_size + threadIdx.x + 32];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 32];
                 }
             }
-            __syncthreads();
+            __syncwarp();
             if (block_size > 16 && threadIdx.x < 16) {
                 shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 16];
-                for (int j = 0; j < dimension; j++) {
-                    gradient[j * batch_size + threadIdx.x] += gradient[j * batch_size + threadIdx.x + 16];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 16];
                 }
             }
-            __syncthreads();
+            __syncwarp();
             if (block_size > 8 && threadIdx.x < 8) {
                 shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 8];
-                for (int j = 0; j < dimension; j++) {
-                    gradient[j * batch_size + threadIdx.x] += gradient[j * batch_size + threadIdx.x + 8];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 8];
                 }
             }
-            __syncthreads();
+            __syncwarp();
             if (block_size > 4 && threadIdx.x < 4) {
                 shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 4];
-                for (int j = 0; j < dimension; j++) {
-                    gradient[j * batch_size + threadIdx.x] += gradient[j * batch_size + threadIdx.x + 4];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 4];
                 }
             }
-            __syncthreads();
+            __syncwarp();
             if (block_size > 2 && threadIdx.x < 2) {
                 shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 2];
-                for (int j = 0; j < dimension; j++) {
-                    gradient[j * batch_size + threadIdx.x] += gradient[j * batch_size + threadIdx.x + 2];
-                }
-            }
-            __syncthreads();
-            if (block_size > 1 && threadIdx.x < 1) {
-                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 1];
-                for (int j = 0; j < dimension; j++) {
-                    gradient[j * batch_size + threadIdx.x] += gradient[j * batch_size + threadIdx.x + 1];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 2];
                 }
             }
         }
-
-        // Update weights
-        __syncthreads();
-        if (threadIdx.x == 0) {
+        __syncwarp();
+        if (block_size > 1 && threadIdx.x == 0) {
+            shared_float_batch_size_buffer[0] += shared_float_batch_size_buffer[0];
+            // Update weights
             for (int i = 0; i < dimension; i++) {
-                w[i] -= learning_rate * gradient[i * batch_size] / shared_int_batch_size_buffer[0];
+                w[i] -= learning_rate * (gradient[i * batch_size] + gradient[i * batch_size + 1]) / shared_int_batch_size_buffer[0];
             }
         }
 
@@ -624,15 +619,15 @@ template<int block_size> __global__ void kernel(float* const _X, float* const _y
     // Write to global memory
     if (threadIdx.x == 0) {
         for (int i = 0; i < dimension; i++) {
-            _w[blockIdx.x * dimension + i] = w[i];
+            global_w[blockIdx.x * dimension + i] = w[i];
         }
     }
 }
 
 int main(void) {
-    float X[sample_size * dimension * model_count];
-    float y[sample_size * model_count];
-    float w[dimension * model_count];
+    float* const X = new float[sample_size * dimension * model_count];
+    float* const y = new float[sample_size * model_count];
+    float* const w = new float[dimension * model_count];
     srand(clock());
 
     // Read training data
@@ -661,6 +656,8 @@ int main(void) {
     cudaMemcpy(device_y, y, sample_size * model_count * sizeof(float), cudaMemcpyHostToDevice);
 
     // Start timing
+    kernel<batch_size><<<1, batch_size>>>(device_X, device_y, device_w, 0);
+    cudaDeviceSynchronize();
     clock_t clk = clock();
 
     kernel<batch_size><<<model_count, batch_size>>>(device_X, device_y, device_w, clk);
@@ -673,11 +670,6 @@ int main(void) {
     // Copy output to host memory
     cudaMemcpy(w, device_w, dimension * model_count * sizeof(float), cudaMemcpyDeviceToHost);
 
-    // Free device memory
-    cudaFree(device_X);
-    cudaFree(device_y);
-    cudaFree(device_w);
-
     // Write the trained weights
     f = fopen("out.txt", "w");
     fprintf(f, "%f", w[(model_count - 1) * dimension]);
@@ -685,6 +677,14 @@ int main(void) {
         fprintf(f, " %f", w[(model_count - 1) * dimension + i]);
     }
     fclose(f);
+
+    // Free resources
+    cudaFree(device_X);
+    cudaFree(device_y);
+    cudaFree(device_w);
+    delete[] X;
+    delete[] y;
+    delete[] w;
 
     return 0;
 }

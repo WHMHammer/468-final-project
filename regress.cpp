@@ -4,7 +4,7 @@
 #include <cstring>
 #include <ctime>
 
-constexpr int model_count = 100;
+constexpr int model_count = 1000;
 
 // Hyperparameters
 constexpr float huber_loss_threashold = 10;
@@ -22,8 +22,8 @@ int main(void) {
 
     // Read training data
     FILE* f = fopen("in.txt", "r");
-    float _X[sample_size * dimension * model_count];
-    float _y[sample_size * model_count];
+    float* const _X = new float[sample_size * dimension * model_count];
+    float* const _y = new float[sample_size * model_count];
     for (int i = 0; i < sample_size; i++) {
         _X[i * dimension] = 1;
         for (int j = 1; j < dimension; j++) {
@@ -36,7 +36,7 @@ int main(void) {
         memcpy(_X + i * sample_size * dimension, _X, sample_size * dimension * sizeof(float));
         memcpy(_y + i * sample_size, _y, sample_size * sizeof(float));
     }
-    float _w[dimension * model_count];
+    float* const _w = new float[dimension * model_count];
 
     // Start timing
     clock_t clk = clock();
@@ -220,6 +220,11 @@ int main(void) {
         fprintf(f, " %f", _w[(model_count - 1) * dimension + i]);
     }
     fclose(f);
+
+    // Free resources
+    delete[] _X;
+    delete[] _y;
+    delete[] _w;
 
     return 0;
 }
