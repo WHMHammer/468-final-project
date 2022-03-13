@@ -4,7 +4,7 @@
 #include <cstring>
 #include <ctime>
 
-constexpr int model_count = 1000;
+constexpr int model_count = 100;
 
 // Hyperparameters
 constexpr float huber_loss_threashold = 10;
@@ -14,7 +14,7 @@ constexpr float learning_rate = 0.01;
 constexpr int batch_size = 128;
 constexpr int max_iter = 10000;
 
-constexpr int sample_size = 1000;
+constexpr int sample_size = 1024;
 constexpr int dimension = 6;
 
 int main(void) {

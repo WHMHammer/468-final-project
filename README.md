@@ -31,8 +31,6 @@ CUDA running time:      639.351ms
 
 ## TODO
 
-- Use local/shared memory to cache the batches
-
 - Test other parallel sorting algorithms to replace merge sort, which has a lot of stall and thread divergence.
 
 - Add padding to adapt to non-power-of-2 batch sizes
@@ -59,7 +57,7 @@ CUDA running time:      639.351ms
 
 - Implemented a local copy of the weight vector in shared memory and only write to global memory when the model is fully trained
 
-- Changed `X` from row-major to column-major for coalesced global memory access
+- Changed `X` from row-major to column-major and applied other methods for coalesced global memory access
 
 [Jiren Li](https://github.com/Li-Jiren)
 

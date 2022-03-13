@@ -2,7 +2,7 @@
 #include <ctime>
 #include <curand_kernel.h>
 
-constexpr int model_count = 1000;
+constexpr int model_count = 100;
 
 // Hyperparameters
 constexpr float huber_loss_threashold = 10;
@@ -12,7 +12,7 @@ constexpr float learning_rate = 0.01;
 constexpr int batch_size = 128;
 constexpr int max_iter = 10000;
 
-constexpr int sample_size = 1000;
+constexpr int sample_size = 1024;
 constexpr int dimension = 6;
 
 template<int block_size> __global__ void kernel(float* const global_X, float* const global_y, float* const global_w, const clock_t seed) {
@@ -38,7 +38,7 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
 
     for (int _ = -1; _ < max_iter; _++) {
         // Sample a consecutive batch with random starting index
-        const int sample_index = ((int)(curand_uniform(&state) * sample_size) + threadIdx.x) % sample_size;
+        const int sample_index = ((int)(curand_uniform(&state) * sample_size) / 32 * 32 + threadIdx.x) % sample_size;
         for (int i = 0; i < dimension; i++) {
             X[i * batch_size + threadIdx.x] = global_X[blockIdx.x * sample_size * dimension + i * sample_size + sample_index];
         }
@@ -656,8 +656,8 @@ int main(void) {
     cudaMemcpy(device_y, y, sample_size * model_count * sizeof(float), cudaMemcpyHostToDevice);
 
     // Start timing
-    kernel<batch_size><<<1, batch_size>>>(device_X, device_y, device_w, 0);
-    cudaDeviceSynchronize();
+    //kernel<batch_size><<<1, batch_size>>>(device_X, device_y, device_w, 0);
+    //cudaDeviceSynchronize();
     clock_t clk = clock();
 
     kernel<batch_size><<<model_count, batch_size>>>(device_X, device_y, device_w, clk);

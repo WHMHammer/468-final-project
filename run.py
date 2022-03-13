@@ -115,7 +115,7 @@ def export_figures(
 
 
 epsilon = 0.49
-training_size = 1000
+training_size = 1024
 testing_size = 1000
 true_power = 9
 fit_power = 5
@@ -138,10 +138,12 @@ with open("in.txt", "w") as f:
 
 p = Process(target=execl, args=("regress_cpp", "regress_cpp"))
 p.start()
+print("Running the C++ implementation, usually takes ~50s for 1000 models, or ~5s for 100 models")
 p.join()
 
 p = Process(target=execl, args=("regress_cuda", "regress_cuda"))
 p.start()
+print("Running the CUDA implementation, usually takes ~0.5s")
 p.join()
 
 with open("out.txt", "r") as f:
