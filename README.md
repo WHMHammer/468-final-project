@@ -31,15 +31,11 @@ CUDA running time:      639.351ms
 
 ## TODO
 
-- Add padding to adapt to non-power-of-2 batch sizes
-
 - Use local/shared memory to cache the batches
 
-- Replace atomic additions in loss and gradient with reduction
+- Test other parallel sorting algorithms to replace merge sort, which has a lot of stall and thread divergence.
 
-- Let the threads in the same warp use the same loss function (either squared or absolute) to prevent thread divergence
-
-- Investigate in other points of thread divergence
+- Add padding to adapt to non-power-of-2 batch sizes
 
 ## Contribution
 
