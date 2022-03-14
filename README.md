@@ -31,8 +31,6 @@ CUDA running time:      639.351ms
 
 ## TODO
 
-- Apply thread coarsening
-
 - Add padding to adapt to non-power-of-2 batch sizes
 
 ## Contribution
@@ -60,6 +58,8 @@ CUDA running time:      639.351ms
 - Changed `X` from row-major to column-major and applied other methods for coalesced global memory access
 
 - Changed the batch sample selection mechanism to save the time from random number generator
+
+- Applied thread coarsening
 
 [Jiren Li](https://github.com/Li-Jiren)
 
