@@ -1,6 +1,5 @@
 #include <cstdio>
 #include <ctime>
-#include <curand_kernel.h>
 
 constexpr int model_count = 100;
 
@@ -15,7 +14,7 @@ constexpr int max_iter = 10000;
 constexpr int sample_size = 1024;
 constexpr int dimension = 6;
 
-template<int block_size> __global__ void kernel(float* const global_X, float* const global_y, float* const global_w, const clock_t seed) {
+template<int block_size> __global__ void kernel(float* const global_X, float* const global_y, float* const global_w) {
     __shared__ float X[dimension * batch_size];
     __shared__ float y[batch_size];
     __shared__ float w[dimension];
@@ -24,7 +23,7 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
     __shared__ float gradient[dimension * batch_size];
     __shared__ float shared_float_batch_size_buffer[batch_size];
     __shared__ int shared_int_batch_size_buffer[batch_size];
-    __shared__ bool flag_z_score_trimming_converged;
+    __shared__ bool flag;
 
     // Initialization
     if (threadIdx.x == 0) {
@@ -33,12 +32,12 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
         }
     }
     float prev_loss;
-    curandState_t state;
-    curand_init(seed, 0, 0, &state);
+    int sample_index_base = 0;
 
     for (int _ = -1; _ < max_iter; _++) {
-        // Sample a consecutive batch with random starting index
-        const int sample_index = ((int)(curand_uniform(&state) * sample_size) / 32 * 32 + threadIdx.x) % sample_size;
+        // Sample consecutive batches in a Round Robin manner
+        const int sample_index = (sample_index_base + threadIdx.x) % sample_size;
+        sample_index_base += batch_size;
         for (int i = 0; i < dimension; i++) {
             X[i * batch_size + threadIdx.x] = global_X[blockIdx.x * sample_size * dimension + i * sample_size + sample_index];
         }
@@ -51,20 +50,11 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
         for (int i = 0; i < dimension; i++) {
             residuals[threadIdx.x] += X[i * batch_size + threadIdx.x] * w[i];
         }
-        
+
         // Odd-even sort (absolute) residuals and permute the indices accordingly
         __syncthreads();
-        for(int i = 0; i < batch_size/2 - 1; i++){
-            if(threadIdx.x % 2 == 0 && residuals[threadIdx.x] > residuals[threadIdx.x + 1]){
-                const float tmp_float = residuals[threadIdx.x];
-                residuals[threadIdx.x] = residuals[threadIdx.x + 1];
-                residuals[threadIdx.x + 1] = tmp_float;
-                const int tmp_int = indices[threadIdx.x];
-                indices[threadIdx.x] = indices[threadIdx.x + 1];
-                indices[threadIdx.x + 1] = tmp_int;
-            }
-            __syncthreads();
-            if(threadIdx.x % 2 == 0 && threadIdx.x != 0 && residuals[threadIdx.x - 1] > residuals[threadIdx.x]){
+        for (int i = 0; i < batch_size / 2; i++) {
+            if (threadIdx.x % 2 == 0 && threadIdx.x != 0 && abs(residuals[threadIdx.x - 1]) > abs(residuals[threadIdx.x])) {
                 const float tmp_float = residuals[threadIdx.x];
                 residuals[threadIdx.x] = residuals[threadIdx.x - 1];
                 residuals[threadIdx.x - 1] = tmp_float;
@@ -73,19 +63,20 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
                 indices[threadIdx.x - 1] = tmp_int;
             }
             __syncthreads();
-        }
-        if(threadIdx.x % 2 == 0 && residuals[threadIdx.x] > residuals[threadIdx.x + 1]){
-            const float tmp_float = residuals[threadIdx.x];
-            residuals[threadIdx.x] = residuals[threadIdx.x + 1];
-            residuals[threadIdx.x + 1] = tmp_float;
-            const int tmp_int = indices[threadIdx.x];
-            indices[threadIdx.x] = indices[threadIdx.x + 1];
-            indices[threadIdx.x + 1] = tmp_int;
+            if (threadIdx.x % 2 == 0 && abs(residuals[threadIdx.x]) > abs(residuals[threadIdx.x + 1])) {
+                const float tmp_float = residuals[threadIdx.x];
+                residuals[threadIdx.x] = residuals[threadIdx.x + 1];
+                residuals[threadIdx.x + 1] = tmp_float;
+                const int tmp_int = indices[threadIdx.x];
+                indices[threadIdx.x] = indices[threadIdx.x + 1];
+                indices[threadIdx.x + 1] = tmp_int;
+            }
+            __syncthreads();
         }
 
         // Epsilon-trimming
         __syncthreads();
-        residuals[threadIdx.x] *= threadIdx.x < batch_size* (1 - epsilon);
+        residuals[threadIdx.x] *= threadIdx.x < batch_size * (1 - epsilon);
 
         // Z-score-trimming
         __syncthreads();
@@ -189,16 +180,16 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
             __syncwarp();
             if (block_size > 1 && threadIdx.x == 0) {
                 shared_float_batch_size_buffer[0] = sqrt(shared_float_batch_size_buffer[0] + shared_float_batch_size_buffer[1]);
-                flag_z_score_trimming_converged = true;
+                flag = true;
             }
             __syncthreads();
             const float stdev = shared_float_batch_size_buffer[0];
             if (residuals[threadIdx.x] != 0 && (residuals[threadIdx.x] < mean - stdev * z_score_trimming_threashold || residuals[threadIdx.x] >  mean + stdev * z_score_trimming_threashold)) {
                 residuals[threadIdx.x] = 0;
-                flag_z_score_trimming_converged = false;
+                flag = false;
             }
             __syncthreads();
-            if (flag_z_score_trimming_converged) {
+            if (flag) {
                 break;
             }
         }
@@ -340,11 +331,11 @@ int main(void) {
     cudaMemcpy(device_y, y, sample_size * model_count * sizeof(float), cudaMemcpyHostToDevice);
 
     // Start timing
-    //kernel<batch_size><<<1, batch_size>>>(device_X, device_y, device_w, 0);
-    //cudaDeviceSynchronize();
+    kernel<batch_size><<<1, batch_size>>>(device_X, device_y, device_w);
+    cudaDeviceSynchronize();
     clock_t clk = clock();
 
-    kernel<batch_size><<<model_count, batch_size>>>(device_X, device_y, device_w, clk);
+    kernel<batch_size><<<model_count, batch_size>>>(device_X, device_y, device_w);
 
     // Stop timing
     cudaDeviceSynchronize();

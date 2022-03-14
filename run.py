@@ -9,6 +9,14 @@ from typing import Union
 
 seed = int(time() * 1e6)
 print(f"Samples seed: {seed}")
+flag_cpp = True
+flag_cuda = True
+
+epsilon = 0.49
+training_size = 1024
+testing_size = 1000
+true_power = 5
+fit_power = 5
 
 
 def power_expand(x: np.ndarray, power: int) -> np.ndarray:
@@ -61,8 +69,7 @@ def export_figures(
     plt.title("Training Set")
     plt.grid()
     if contamination_indices is None:
-        plt.scatter(x_training, y_training, s=4,
-                    c="blue", label="True Samples")
+        plt.scatter(x_training, y_training, s=4, c="blue", label="True Samples")
     else:
         plt.scatter(
             np.delete(x_training, contamination_indices),
@@ -99,12 +106,10 @@ def export_figures(
 
     plt.figure()
     plt.suptitle(test_name)
-    plt.title(
-        f"Testing Set, MSE={mean_squared_error(predicted_y_testing, y_testing)}")
+    plt.title(f"Testing Set, MSE={mean_squared_error(predicted_y_testing, y_testing)}")
     plt.grid()
     plt.scatter(x_testing, y_testing, s=4, c="blue", label="True Samples")
-    plt.scatter(x_testing, predicted_y_testing,
-                s=4, c="red", label="Predictions")
+    plt.scatter(x_testing, predicted_y_testing, s=4, c="red", label="Predictions")
     plt.legend()
     plt.xlabel("x")
     plt.xlim(-1, 1)
@@ -114,18 +119,11 @@ def export_figures(
     plt.close()
 
 
-epsilon = 0.49
-training_size = 1024
-testing_size = 1000
-true_power = 9
-fit_power = 5
-
 rng = np.random.default_rng(seed)
 w = generate_random_weights(true_power, -10, 10)
 x_training, y_training = generate_random_samples(w, 1, training_size)
 contamination_size = ceil(epsilon * training_size)
-contamination_indices = np.argsort(x_training)[int(
-    training_size * (1 - epsilon) * 0.5):int(training_size * (1 + epsilon) * 0.5)]
+contamination_indices = np.argsort(x_training)[int(training_size * (1 - epsilon) * 0.5):int(training_size * (1 + epsilon) * 0.5)]
 y_training[contamination_indices] += y_training.max() - y_training.min()
 x_testing, y_testing = generate_random_samples(w, 0, testing_size)
 
@@ -136,15 +134,17 @@ with open("in.txt", "w") as f:
             f.write(f"{X[i][j]} ")
         f.write(f" {y_training[i]}\n")
 
-p = Process(target=execl, args=("regress_cpp", "regress_cpp"))
-p.start()
-print("Running the C++ implementation, usually takes ~50s for 1000 models, or ~5s for 100 models")
-p.join()
+if flag_cpp:
+    p = Process(target=execl, args=("regress_cpp", "regress_cpp"))
+    p.start()
+    print("Running the C++ implementation, usually takes ~50s for 1000 models, or ~5s for 100 models")
+    p.join()
 
-p = Process(target=execl, args=("regress_cuda", "regress_cuda"))
-p.start()
-print("Running the CUDA implementation, usually takes ~0.5s")
-p.join()
+if flag_cuda:
+    p = Process(target=execl, args=("regress_cuda", "regress_cuda"))
+    p.start()
+    print("Running the CUDA implementation, usually takes ~0.5s")
+    p.join()
 
 with open("out.txt", "r") as f:
     w = np.fromiter(map(float, f.read().split()), float)

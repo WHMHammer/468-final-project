@@ -31,7 +31,7 @@ CUDA running time:      639.351ms
 
 ## TODO
 
-- Test other parallel sorting algorithms to replace merge sort, which has a lot of stall and thread divergence.
+- Apply thread coarsening
 
 - Add padding to adapt to non-power-of-2 batch sizes
 
@@ -47,7 +47,7 @@ CUDA running time:      639.351ms
 
 - Parallelized residual calculation
 
-- Parallelized merge sort
+- Parallelized merge sort (which was replaced by the later odd-even sort)
 
 - Parallelize epsilon-trimming
 
@@ -59,9 +59,13 @@ CUDA running time:      639.351ms
 
 - Changed `X` from row-major to column-major and applied other methods for coalesced global memory access
 
+- Changed the batch sample selection mechanism to save the time from random number generator
+
 [Jiren Li](https://github.com/Li-Jiren)
 
-- Unrolled the loops for the parallel merge sort
+- Implemented the odd-even sort and tested some other parallel sorting algorithms
+
+- Unrolled the loops for the parallel merge sort (which was replaced by the later odd-even sort)
 
 ## Acknowledgement
 
