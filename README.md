@@ -22,14 +22,20 @@ Two graphs, `testing.png` and `training.png` will be generated, showing the regr
 
 ## Results
 
-The following results are from training 100 models, each with 1000 samples and a batch size of 128.
-
-```
-C++ running time:       5141.130ms
-CUDA running time:      639.351ms
-```
+| Implementation | # of models trained | Training Time (ms) |
+|----------------|---------------------|--------------------|
+| C++            | 1                   | 54.701             |
+|                | 10                  | 542.758            |
+|                | 100                 | 5,336.640          |
+|                | 1000                | 54,236,484         |
+| CUDA           | 1                   | 119.817            |
+|                | 10                  | 121.361            |
+|                | 100                 | 132.146            |
+|                | 1000                | 848.172            |
 
 ## TODO
+
+- Find out ways to reduce shared memory usage
 
 - Add padding to adapt to non-power-of-2 batch sizes
 
@@ -45,7 +51,7 @@ CUDA running time:      639.351ms
 
 - Parallelized residual calculation
 
-- Parallelized merge sort (which was replaced by the later odd-even sort)
+- Parallelized merge sort (which was replaced by the later enumeration sort)
 
 - Parallelize epsilon-trimming
 
@@ -61,9 +67,13 @@ CUDA running time:      639.351ms
 
 - Applied thread coarsening
 
+- Solved many thread divergence issues
+
 [Jiren Li](https://github.com/Li-Jiren)
 
-- Implemented the odd-even sort and tested some other parallel sorting algorithms
+- Implemented the enumeration sort
+
+- Implemented the odd-even sort (which was replaced by the enumeration sort)
 
 - Unrolled the loops for the parallel merge sort (which was replaced by the later odd-even sort)
 

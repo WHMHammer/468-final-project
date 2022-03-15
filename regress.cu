@@ -1,7 +1,7 @@
 #include <cstdio>
 #include <ctime>
 
-constexpr int model_count = 100;
+constexpr int model_count = 1000;
 
 // Hyperparameters
 constexpr float huber_loss_threashold = 10;
@@ -35,6 +35,7 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
     int sample_index_base = 0;
 
     for (int _ = -1; _ < max_iter; _++) {
+
         // Sample consecutive batches in a Round Robin manner
         for (int i = 0; i < dimension; i++) {
             X[i * batch_size + threadIdx.x] = global_X[blockIdx.x * sample_size * dimension + i * sample_size + (sample_index_base + threadIdx.x) % sample_size];
@@ -57,113 +58,107 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
 
         // Sort (absolute) residuals and permute the indices accordingly
         __syncthreads();
+        int count0 = 0;
         int count1 = 0;
-        int count2 = 0;
         for (int i = 0; i < batch_size; i++) {
-            if ((abs(residuals[threadIdx.x]) > abs(residuals[i])) || (abs(residuals[threadIdx.x]) == abs(residuals[i]) && threadIdx.x > i)) {
-                count1++;
-            }
-            if ((abs(residuals[threadIdx.x + block_size]) > abs(residuals[i])) || (abs(residuals[threadIdx.x + block_size]) == abs(residuals[i]) && (threadIdx.x + block_size) > i)) {
-                count2++;
-            }
+            count0 += abs(residuals[threadIdx.x]) > abs(residuals[i]) || (abs(residuals[threadIdx.x]) == abs(residuals[i]) && threadIdx.x > i);
+            count1 += abs(residuals[threadIdx.x + block_size]) > abs(residuals[i]) || (abs(residuals[threadIdx.x + block_size]) == abs(residuals[i]) && (threadIdx.x + block_size) > i);
         }
-        shared_float_batch_size_buffer[count1] = residuals[threadIdx.x];
-        shared_int_batch_size_buffer[count1] = indices[threadIdx.x];
-        shared_float_batch_size_buffer[count2] = residuals[threadIdx.x + block_size];
-        shared_int_batch_size_buffer[count2] = indices[threadIdx.x + block_size];
+        shared_float_batch_size_buffer[count0] = residuals[threadIdx.x];
+        shared_int_batch_size_buffer[count0] = indices[threadIdx.x];
+        shared_float_batch_size_buffer[count1] = residuals[threadIdx.x + block_size];
+        shared_int_batch_size_buffer[count1] = indices[threadIdx.x + block_size];
         __syncthreads();
         residuals[threadIdx.x] = shared_float_batch_size_buffer[threadIdx.x];
         indices[threadIdx.x] = shared_int_batch_size_buffer[threadIdx.x];
         residuals[threadIdx.x + block_size] = shared_float_batch_size_buffer[threadIdx.x + block_size];
         indices[threadIdx.x + block_size] = shared_int_batch_size_buffer[threadIdx.x + block_size];
-        
+
         // Epsilon-trimming
         __syncthreads();
-        residuals[threadIdx.x] *= threadIdx.x < batch_size* (1 - epsilon);
+        residuals[threadIdx.x] *= threadIdx.x < batch_size * (1 - epsilon);
         residuals[block_size + threadIdx.x] *= block_size + threadIdx.x < batch_size* (1 - epsilon);
 
         // Z-score-trimming
         __syncthreads();
         while (true) {
-            {
-                shared_float_batch_size_buffer[threadIdx.x] = residuals[threadIdx.x];
-                shared_int_batch_size_buffer[threadIdx.x] = residuals[threadIdx.x] != 0;
-                shared_float_batch_size_buffer[threadIdx.x + block_size] = residuals[threadIdx.x + block_size];
-                shared_int_batch_size_buffer[threadIdx.x + block_size] = residuals[threadIdx.x + block_size] != 0;
-                if (block_size == 1024) {
-                    __syncthreads();
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 1024];
-                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 1024];
+            shared_float_batch_size_buffer[threadIdx.x] = residuals[threadIdx.x];
+            shared_int_batch_size_buffer[threadIdx.x] = residuals[threadIdx.x] != 0;
+            shared_float_batch_size_buffer[threadIdx.x + block_size] = residuals[threadIdx.x + block_size];
+            shared_int_batch_size_buffer[threadIdx.x + block_size] = residuals[threadIdx.x + block_size] != 0;
+            if (block_size == 1024) {
+                __syncthreads();
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 1024];
+                shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 1024];
+            }
+            if (block_size >= 512) {
+                __syncthreads();
+                if (threadIdx.x < 512) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 512];
+                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 512];
                 }
-                if (block_size >= 512) {
-                    __syncthreads();
-                    if (threadIdx.x < 512) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 512];
-                        shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 512];
-                    }
+            }
+            if (block_size >= 256) {
+                __syncthreads();
+                if (threadIdx.x < 256) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 256];
+                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 256];
                 }
-                if (block_size >= 256) {
-                    __syncthreads();
-                    if (threadIdx.x < 256) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 256];
-                        shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 256];
-                    }
+            }
+            if (block_size >= 128) {
+                __syncthreads();
+                if (threadIdx.x < 128) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 128];
+                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 128];
                 }
-                if (block_size >= 128) {
-                    __syncthreads();
-                    if (threadIdx.x < 128) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 128];
-                        shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 128];
-                    }
+            }
+            if (block_size >= 64) {
+                __syncthreads();
+                if (threadIdx.x < 64) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 64];
+                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 64];
                 }
-                if (block_size >= 64) {
-                    __syncthreads();
-                    if (threadIdx.x < 64) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 64];
-                        shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 64];
-                    }
+            }
+            if (block_size >= 32) {
+                __syncthreads();
+                if (threadIdx.x < 32) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 32];
+                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 32];
                 }
-                if (block_size >= 32) {
-                    __syncthreads();
-                    if (threadIdx.x < 32) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 32];
-                        shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 32];
-                    }
+            }
+            if (block_size >= 16) {
+                __syncwarp();
+                if (threadIdx.x < 32) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 16];
+                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 16];
                 }
-                if (block_size >= 16) {
-                    __syncwarp();
-                    if (threadIdx.x < 16) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 16];
-                        shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 16];
-                    }
+            }
+            if (block_size >= 8) {
+                __syncwarp();
+                if (threadIdx.x < 32) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 8];
+                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 8];
                 }
-                if (block_size >= 8) {
-                    __syncwarp();
-                    if (threadIdx.x < 8) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 8];
-                        shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 8];
-                    }
+            }
+            if (block_size >= 4) {
+                __syncwarp();
+                if (threadIdx.x < 32) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 4];
+                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 4];
                 }
-                if (block_size >= 4) {
-                    __syncwarp();
-                    if (threadIdx.x < 4) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 4];
-                        shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 4];
-                    }
+            }
+            if (block_size >= 2) {
+                __syncwarp();
+                if (threadIdx.x < 32) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 2];
+                    shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 2];
                 }
-                if (block_size >= 2) {
-                    __syncwarp();
-                    if (threadIdx.x < 2) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 2];
-                        shared_int_batch_size_buffer[threadIdx.x] += shared_int_batch_size_buffer[threadIdx.x + 2];
-                    }
-                }
-                if (block_size >= 1) {
-                    __syncwarp();
-                    if (threadIdx.x == 0) {
-                        shared_float_batch_size_buffer[0] += shared_float_batch_size_buffer[1];
-                        shared_int_batch_size_buffer[0] += shared_int_batch_size_buffer[1];
-                    }
+            }
+            if (block_size >= 1) {
+                __syncwarp();
+                if (threadIdx.x == 0) {
+                    shared_float_batch_size_buffer[0] += shared_float_batch_size_buffer[1];
+                    shared_int_batch_size_buffer[0] += shared_int_batch_size_buffer[1];
                 }
             }
             __syncthreads();
@@ -173,64 +168,62 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
             __syncthreads();
             shared_float_batch_size_buffer[threadIdx.x] = (residuals[threadIdx.x] != 0) * diff0 * diff0 / shared_int_batch_size_buffer[0];
             shared_float_batch_size_buffer[block_size + threadIdx.x] = (residuals[block_size + threadIdx.x] != 0) * diff1 * diff1 / shared_int_batch_size_buffer[0];
-            {
-                if (block_size == 1024) {
-                    __syncthreads();
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 1024];
+            if (block_size == 1024) {
+                __syncthreads();
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 1024];
+            }
+            if (block_size >= 512) {
+                __syncthreads();
+                if (threadIdx.x < 512) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 512];
                 }
-                if (block_size >= 512) {
-                    __syncthreads();
-                    if (threadIdx.x < 512) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 512];
-                    }
+            }
+            if (block_size >= 256) {
+                __syncthreads();
+                if (threadIdx.x < 256) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 256];
                 }
-                if (block_size >= 256) {
-                    __syncthreads();
-                    if (threadIdx.x < 256) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 256];
-                    }
+            }
+            if (block_size >= 128) {
+                __syncthreads();
+                if (threadIdx.x < 128) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 128];
                 }
-                if (block_size >= 128) {
-                    __syncthreads();
-                    if (threadIdx.x < 128) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 128];
-                    }
+            }
+            if (block_size >= 64) {
+                __syncthreads();
+                if (threadIdx.x < 64) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 64];
                 }
-                if (block_size >= 64) {
-                    __syncthreads();
-                    if (threadIdx.x < 64) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 64];
-                    }
+            }
+            if (block_size >= 32) {
+                __syncthreads();
+                if (threadIdx.x < 32) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 32];
                 }
-                if (block_size >= 32) {
-                    __syncthreads();
-                    if (threadIdx.x < 32) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 32];
-                    }
+            }
+            if (block_size >= 16) {
+                __syncwarp();
+                if (threadIdx.x < 32) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 16];
                 }
-                if (block_size >= 16) {
-                    __syncwarp();
-                    if (threadIdx.x < 16) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 16];
-                    }
+            }
+            if (block_size >= 8) {
+                __syncwarp();
+                if (threadIdx.x < 32) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 8];
                 }
-                if (block_size >= 8) {
-                    __syncwarp();
-                    if (threadIdx.x < 8) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 8];
-                    }
+            }
+            if (block_size >= 4) {
+                __syncwarp();
+                if (threadIdx.x < 32) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 4];
                 }
-                if (block_size >= 4) {
-                    __syncwarp();
-                    if (threadIdx.x < 4) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 4];
-                    }
-                }
-                if (block_size >= 2) {
-                    __syncwarp();
-                    if (threadIdx.x < 2) {
-                        shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 2];
-                    }
+            }
+            if (block_size >= 2) {
+                __syncwarp();
+                if (threadIdx.x < 32) {
+                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 2];
                 }
             }
             if (block_size >= 1) {
@@ -261,119 +254,101 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
         // Calculate Huber Loss and gradient
         const float residual0 = residuals[threadIdx.x];
         const float abs_residual0 = abs(residual0);
-        if (abs_residual0 <= huber_loss_threashold) {
-            shared_float_batch_size_buffer[threadIdx.x] = residual0 * residual0 / 2;
-            for (int i = 0; i < dimension; i++) {
-                gradient[i * batch_size + threadIdx.x] = residual0 * X[i * batch_size + indices[threadIdx.x]];
-            }
-        }
-        else {
-            shared_float_batch_size_buffer[threadIdx.x] = abs_residual0 * huber_loss_threashold - huber_loss_threashold * huber_loss_threashold / 2;
-            for (int i = 0; i < dimension; i++) {
-                gradient[i * batch_size + threadIdx.x] = ((residual0 > 0) - (residual0 < 0)) * X[i * batch_size + indices[threadIdx.x]] * huber_loss_threashold;
-            }
-        }
+        const float flag_squared_loss0 = abs_residual0 < huber_loss_threashold;
         const float residual1 = residuals[block_size + threadIdx.x];
         const float abs_residual1 = abs(residual1);
-        if (abs_residual1 <= huber_loss_threashold) {
-            shared_float_batch_size_buffer[block_size + threadIdx.x] = residual1 * residual1 / 2;
+        const float flag_squared_loss1 = abs_residual1 < huber_loss_threashold;
+        shared_float_batch_size_buffer[threadIdx.x] = flag_squared_loss0 * residual0 * residual0 / 2 + !flag_squared_loss0 * (abs_residual0 * huber_loss_threashold - huber_loss_threashold * huber_loss_threashold / 2);
+        shared_float_batch_size_buffer[block_size + threadIdx.x] = flag_squared_loss1 * residual1 * residual1 / 2 + !flag_squared_loss1 * (abs_residual1 * huber_loss_threashold - huber_loss_threashold * huber_loss_threashold / 2);
+        for (int i = 0; i < dimension; i++) {
+            gradient[i * batch_size + threadIdx.x] = flag_squared_loss0 * residual0 * X[i * batch_size + indices[threadIdx.x]] + !flag_squared_loss0 * ((residual0 > 0) - (residual0 < 0)) * X[i * batch_size + indices[threadIdx.x]] * huber_loss_threashold;
+            gradient[i * batch_size + block_size + threadIdx.x] = flag_squared_loss1 * residual1 * X[i * batch_size + indices[block_size + threadIdx.x]] + !flag_squared_loss1 * ((residual1 > 0) - (residual1 < 0)) * X[i * batch_size + indices[block_size + threadIdx.x]] * huber_loss_threashold;
+        }
+        if (block_size == 1024) {
+            __syncthreads();
+            shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 1024];
             for (int i = 0; i < dimension; i++) {
-                gradient[i * batch_size + block_size + threadIdx.x] = residual1 * X[i * batch_size + indices[block_size + threadIdx.x]];
+                gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 1024];
             }
         }
-        else {
-            shared_float_batch_size_buffer[block_size + threadIdx.x] = abs_residual1 * huber_loss_threashold - huber_loss_threashold * huber_loss_threashold / 2;
-            for (int i = 0; i < dimension; i++) {
-                gradient[i * batch_size + block_size + threadIdx.x] = ((residual1 > 0) - (residual1 < 0)) * X[i * batch_size + indices[block_size + threadIdx.x]] * huber_loss_threashold;
-            }
-        }
-        {
-            if (block_size == 1024) {
-                __syncthreads();
-                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 1024];
+        if (block_size >= 512) {
+            __syncthreads();
+            if (threadIdx.x < 512) {
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 512];
                 for (int i = 0; i < dimension; i++) {
-                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 1024];
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 512];
                 }
             }
-            if (block_size >= 512) {
-                __syncthreads();
-                if (threadIdx.x < 512) {
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 512];
-                    for (int i = 0; i < dimension; i++) {
-                        gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 512];
-                    }
+        }
+        if (block_size >= 256) {
+            __syncthreads();
+            if (threadIdx.x < 256) {
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 256];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 256];
                 }
             }
-            if (block_size >= 256) {
-                __syncthreads();
-                if (threadIdx.x < 256) {
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 256];
-                    for (int i = 0; i < dimension; i++) {
-                        gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 256];
-                    }
+        }
+        if (block_size >= 128) {
+            __syncthreads();
+            if (threadIdx.x < 128) {
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 128];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 128];
                 }
             }
-            if (block_size >= 128) {
-                __syncthreads();
-                if (threadIdx.x < 128) {
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 128];
-                    for (int i = 0; i < dimension; i++) {
-                        gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 128];
-                    }
+        }
+        if (block_size >= 64) {
+            __syncthreads();
+            if (threadIdx.x < 64) {
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 64];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 64];
                 }
             }
-            if (block_size >= 64) {
-                __syncthreads();
-                if (threadIdx.x < 64) {
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 64];
-                    for (int i = 0; i < dimension; i++) {
-                        gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 64];
-                    }
+        }
+        if (block_size >= 32) {
+            __syncthreads();
+            if (threadIdx.x < 32) {
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 32];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 32];
                 }
             }
-            if (block_size >= 32) {
-                __syncthreads();
-                if (threadIdx.x < 32) {
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 32];
-                    for (int i = 0; i < dimension; i++) {
-                        gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 32];
-                    }
+        }
+        if (block_size >= 16) {
+            __syncwarp();
+            if (threadIdx.x < 32) {
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 16];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 16];
                 }
             }
-            if (block_size >= 16) {
-                __syncwarp();
-                if (threadIdx.x < 16) {
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 16];
-                    for (int i = 0; i < dimension; i++) {
-                        gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 16];
-                    }
+        }
+        if (block_size >= 8) {
+            __syncwarp();
+            if (threadIdx.x < 32) {
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 8];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 8];
                 }
             }
-            if (block_size >= 8) {
-                __syncwarp();
-                if (threadIdx.x < 8) {
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 8];
-                    for (int i = 0; i < dimension; i++) {
-                        gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 8];
-                    }
+        }
+        if (block_size >= 4) {
+            __syncwarp();
+            if (threadIdx.x < 32) {
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 4];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 4];
                 }
             }
-            if (block_size >= 4) {
-                __syncwarp();
-                if (threadIdx.x < 4) {
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 4];
-                    for (int i = 0; i < dimension; i++) {
-                        gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 4];
-                    }
-                }
-            }
-            if (block_size >= 2) {
-                __syncwarp();
-                if (threadIdx.x < 2) {
-                    shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 2];
-                    for (int i = 0; i < dimension; i++) {
-                        gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 2];
-                    }
+        }
+        if (block_size >= 2) {
+            __syncwarp();
+            if (threadIdx.x < 32) {
+                shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 2];
+                for (int i = 0; i < dimension; i++) {
+                    gradient[i * batch_size + threadIdx.x] += gradient[i * batch_size + threadIdx.x + 2];
                 }
             }
         }
@@ -437,8 +412,6 @@ int main(void) {
     cudaMemcpy(device_y, y, sample_size * model_count * sizeof(float), cudaMemcpyHostToDevice);
 
     // Start timing
-    kernel<batch_size / 2><<<1, batch_size / 2>>>(device_X, device_y, device_w);
-    cudaDeviceSynchronize();
     clock_t clk = clock();
 
     kernel<batch_size / 2><<<model_count, batch_size / 2>>>(device_X, device_y, device_w);

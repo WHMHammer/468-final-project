@@ -143,7 +143,7 @@ if flag_cpp:
 if flag_cuda:
     p = Process(target=execl, args=("regress_cuda", "regress_cuda"))
     p.start()
-    print("Running the CUDA implementation, usually takes ~0.5s")
+    print("Running the CUDA implementation, usually takes <1s for <1000 models")
     p.join()
 
 with open("out.txt", "r") as f:

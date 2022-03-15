@@ -4,7 +4,7 @@
 #include <cstring>
 #include <ctime>
 
-constexpr int model_count = 100;
+constexpr int model_count = 1000;
 
 // Hyperparameters
 constexpr float huber_loss_threashold = 10;
