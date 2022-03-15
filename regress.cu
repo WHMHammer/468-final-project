@@ -60,18 +60,12 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
         int count1 = 0;
         int count2 = 0;
         for (int i = 0; i < batch_size; i++) {
-            if (abs(residuals[threadIdx.x]) > abs(residuals[i])) {
+            if ((abs(residuals[threadIdx.x]) > abs(residuals[i])) || (abs(residuals[threadIdx.x]) == abs(residuals[i]) && threadIdx.x > i)) {
                 count1++;
             }
-            if (abs(residuals[threadIdx.x]) == abs(residuals[i]) && threadIdx.x > i){
-                count1++;
-            }
-            if (abs(residuals[threadIdx.x + block_size]) > abs(residuals[i])) {
+            if ((abs(residuals[threadIdx.x + block_size]) > abs(residuals[i])) || (abs(residuals[threadIdx.x + block_size]) == abs(residuals[i]) && (threadIdx.x + block_size) > i)) {
                 count2++;
             }
-            if (abs(residuals[threadIdx.x + block_size]) == abs(residuals[i]) && (threadIdx.x + block_size) > i){
-                count2++;
-            }            
         }
         shared_float_batch_size_buffer[count1] = residuals[threadIdx.x];
         shared_int_batch_size_buffer[count1] = indices[threadIdx.x];
@@ -82,7 +76,7 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
         indices[threadIdx.x] = shared_int_batch_size_buffer[threadIdx.x];
         residuals[threadIdx.x + block_size] = shared_float_batch_size_buffer[threadIdx.x + block_size];
         indices[threadIdx.x + block_size] = shared_int_batch_size_buffer[threadIdx.x + block_size];
-
+        
         // Epsilon-trimming
         __syncthreads();
         residuals[threadIdx.x] *= threadIdx.x < batch_size* (1 - epsilon);
@@ -94,6 +88,8 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
             {
                 shared_float_batch_size_buffer[threadIdx.x] = residuals[threadIdx.x];
                 shared_int_batch_size_buffer[threadIdx.x] = residuals[threadIdx.x] != 0;
+                shared_float_batch_size_buffer[threadIdx.x + block_size] = residuals[threadIdx.x + block_size];
+                shared_int_batch_size_buffer[threadIdx.x + block_size] = residuals[threadIdx.x + block_size] != 0;
                 if (block_size == 1024) {
                     __syncthreads();
                     shared_float_batch_size_buffer[threadIdx.x] += shared_float_batch_size_buffer[threadIdx.x + 1024];
