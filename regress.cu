@@ -55,28 +55,33 @@ template<int block_size> __global__ void kernel(float* const global_X, float* co
             residuals[block_size + threadIdx.x] += X[i * batch_size + block_size + threadIdx.x] * w[i];
         }
 
-        // Odd-even sort (absolute) residuals and permute the indices accordingly
+        // Sort (absolute) residuals and permute the indices accordingly
         __syncthreads();
-        for (int i = 0; i < block_size; i++) {
-            if (threadIdx.x != 0 && abs(residuals[threadIdx.x * 2 - 1]) > abs(residuals[threadIdx.x * 2])) {
-                const float tmp_float = residuals[threadIdx.x * 2];
-                residuals[threadIdx.x * 2] = residuals[threadIdx.x * 2 - 1];
-                residuals[threadIdx.x * 2 - 1] = tmp_float;
-                const int tmp_int = indices[threadIdx.x * 2];
-                indices[threadIdx.x * 2] = indices[threadIdx.x * 2 - 1];
-                indices[threadIdx.x * 2 - 1] = tmp_int;
+        int count1 = 0;
+        int count2 = 0;
+        for (int i = 0; i < batch_size; i++) {
+            if (abs(residuals[threadIdx.x]) > abs(residuals[i])) {
+                count1++;
             }
-            __syncthreads();
-            if (abs(residuals[threadIdx.x * 2]) > abs(residuals[threadIdx.x * 2 + 1])) {
-                const float tmp_float = residuals[threadIdx.x * 2];
-                residuals[threadIdx.x * 2] = residuals[threadIdx.x * 2 + 1];
-                residuals[threadIdx.x * 2 + 1] = tmp_float;
-                const int tmp_int = indices[threadIdx.x * 2];
-                indices[threadIdx.x * 2] = indices[threadIdx.x * 2 + 1];
-                indices[threadIdx.x * 2 + 1] = tmp_int;
+            if (abs(residuals[threadIdx.x]) == abs(residuals[i]) && threadIdx.x > i){
+                count1++;
             }
-            __syncthreads();
+            if (abs(residuals[threadIdx.x + block_size]) > abs(residuals[i])) {
+                count2++;
+            }
+            if (abs(residuals[threadIdx.x + block_size]) == abs(residuals[i]) && (threadIdx.x + block_size) > i){
+                count2++;
+            }            
         }
+        shared_float_batch_size_buffer[count1] = residuals[threadIdx.x];
+        shared_int_batch_size_buffer[count1] = indices[threadIdx.x];
+        shared_float_batch_size_buffer[count2] = residuals[threadIdx.x + block_size];
+        shared_int_batch_size_buffer[count2] = indices[threadIdx.x + block_size];
+        __syncthreads();
+        residuals[threadIdx.x] = shared_float_batch_size_buffer[threadIdx.x];
+        indices[threadIdx.x] = shared_int_batch_size_buffer[threadIdx.x];
+        residuals[threadIdx.x + block_size] = shared_float_batch_size_buffer[threadIdx.x + block_size];
+        indices[threadIdx.x + block_size] = shared_int_batch_size_buffer[threadIdx.x + block_size];
 
         // Epsilon-trimming
         __syncthreads();
